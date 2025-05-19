@@ -1,0 +1,9 @@
+.venv/
+venv/
+__pycache__
+
+input_img/*
+input_pdfs/*
+output_pdfs/*
+configs/*
+temp_images/*
