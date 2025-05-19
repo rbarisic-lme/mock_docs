@@ -183,7 +183,7 @@ def update_editor_ui(state, window, manager):
     
     # Create or update toolbar buttons
     toolbar_buttons = create_toolbar_buttons(manager, window_height)
-    state['btn_select'], state['btn_add_text'], state['btn_add_image'], state['btn_add_rect'] = toolbar_buttons
+    state['btn_select'], state['btn_add_text'], state['btn_add_image'], state['btn_add_rect'], state['btn_add_obscure'] = toolbar_buttons
     
     # Create or update zoom controls
     zoom_controls = create_zoom_controls(manager, window_width, window_height)
@@ -245,7 +245,7 @@ def main():
     print(f"[app.py] Editor UI updated.")
     # Add initial toolbar highlight
     update_toolbar_highlight(
-        [state['btn_select'], state['btn_add_text'], state['btn_add_image'], state['btn_add_rect']],
+        [state['btn_select'], state['btn_add_text'], state['btn_add_image'], state['btn_add_rect'], state['btn_add_obscure']],
         state['tool_mode'],
         state['insert_mode']
     )
@@ -337,9 +337,14 @@ def main():
             state['canvas_size'] = (state['doc_img_full'].get_width(), state['doc_img_full'].get_height())
             state['page_changed'] = False
 
+        # --- Force redraw if requested (e.g., obscure mode changed) ---
+        if state.get('redraw'):
+            state['redraw'] = False
+            # No-op: the next drawing section will use the updated config
+
         # --- UI Updates based on state (call these every frame after events) --- 
         update_toolbar_highlight(
-            [state['btn_select'], state['btn_add_text'], state['btn_add_image'], state['btn_add_rect']],
+            [state['btn_select'], state['btn_add_text'], state['btn_add_image'], state['btn_add_rect'], state['btn_add_obscure']],
             state['tool_mode'], state['insert_mode'])
         update_zoom_controls(
             [state['btn_minus'], state['btn_actual'], state['btn_plus'], state['btn_reset_pan'], state['zoom_label']],

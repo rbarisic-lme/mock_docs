@@ -55,6 +55,11 @@ DOUBLE_CLICK_THRESHOLD = 0.4  # seconds
 CUSTOM_TEXT_KEY_DISPLAY = "<Custom Text>"
 DEFAULT_TEXT_PLACEHOLDER_VALUE = "{{NEW_TEXT_FIELD}}"
 
+# New constants
+DEFAULT_OBSCURE_MODE = 'pixelate'
+OBSCURE_PIXELATE_FACTOR = 0.08
+OBSCURE_BLUR_KERNEL = 7
+
 def flatten_json_keys(data, prefix=''):
     """Flattens a nested dictionary or list into a list of dot-separated keys."""
     items = []

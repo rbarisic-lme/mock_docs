@@ -11,6 +11,7 @@ from app.template_editor.ui_text_properties import hide_font_menu, show_font_men
 from app.template_editor.ui_image_properties import show_image_properties_panel, hide_image_properties_panel, handle_image_properties_event
 from app.template_editor.ui_components import ImageFileSelectWindow
 from app.template_editor import ui_text_properties # Ensure this import is present or adjust as needed
+from app.template_editor.ui_obscure_properties import show_obscure_properties_panel, hide_obscure_properties_panel, handle_obscure_properties_event
 
 def handle_keyboard_event(event, state, manager: pygame_gui.UIManager):
     """Handle keyboard events"""
@@ -223,6 +224,35 @@ def handle_mousebuttondown(event, state, window, manager: pygame_gui.UIManager):
             hide_image_properties_panel() # Hide panels if a rect is added
             handled = True
 
+        elif state['insert_mode'] == 'obscure':
+            new_el = {
+                'type': 'obscure',
+                'x': cx,
+                'y': cy,
+                'width': 100,
+                'height': 50,
+                'mode': 'pixelate'  # default mode
+            }
+            state['config']['pages'][state['page_num']]['elements'].append(new_el)
+            new_idx = len(state['config']['pages'][state['page_num']]['elements']) - 1
+            state['selected_idx'] = new_idx
+            state['insert_mode'] = None
+            state['tool_mode'] = 'select'
+            pygame.mouse.set_visible(True)
+            hide_font_menu()
+            hide_image_properties_panel()
+            # Show obscure properties panel
+            selected_el_for_props = state['config']['pages'][state['page_num']]['elements'][new_idx]
+            el_x_bounds, el_y_bounds, el_w_bounds, el_h_bounds, _, _ = get_element_bounds(selected_el_for_props, SCALE/state['zoom'])
+            element_screen_x = canvas_x + el_x_bounds * state['zoom']
+            element_screen_y = canvas_y + el_y_bounds * state['zoom']
+            element_rect_display = pygame.Rect(element_screen_x, element_screen_y, el_w_bounds * state['zoom'], el_h_bounds * state['zoom'])
+            show_obscure_properties_panel(manager, selected_el_for_props, element_rect_display)
+            state['editing_idx'] = new_idx # Ensure editing_idx is set for obscure
+            hide_font_menu()
+            hide_image_properties_panel()
+            handled = True
+
         elif state['tool_mode'] == 'select' and not state['insert_mode'] and not state['text_edit_mode']:
             clicked_on_something = False # General flag if any interaction happened
             # Check for resize handle clicks FIRST
@@ -267,12 +297,23 @@ def handle_mousebuttondown(event, state, window, manager: pygame_gui.UIManager):
                     show_image_properties_panel(manager, selected_el_for_props, element_rect_display)
                     state['editing_idx'] = state['selected_idx'] # Keep editing_idx in sync for props
                     hide_font_menu()
+                elif state['selected_idx'] is not None and state['config']['pages'][state['page_num']]['elements'][state['selected_idx']].get('type') == 'obscure':
+                    selected_el_for_props = state['config']['pages'][state['page_num']]['elements'][state['selected_idx']]
+                    el_x_bounds, el_y_bounds, el_w_bounds, el_h_bounds, _, _ = get_element_bounds(selected_el_for_props, SCALE/state['zoom'])
+                    element_screen_x = canvas_x + el_x_bounds * state['zoom']
+                    element_screen_y = canvas_y + el_y_bounds * state['zoom']
+                    element_rect_display = pygame.Rect(element_screen_x, element_screen_y, el_w_bounds * state['zoom'], el_h_bounds * state['zoom'])
+                    show_obscure_properties_panel(manager, selected_el_for_props, element_rect_display)
+                    state['editing_idx'] = state['selected_idx'] # Ensure editing_idx is set for obscure
+                    hide_font_menu()
+                    hide_image_properties_panel()
                 elif state['selected_idx'] is not None and state['config']['pages'][state['page_num']]['elements'][state['selected_idx']].get('type') == 'text':
                     hide_image_properties_panel() # Hide image panel if a text element's handle is clicked
-                    # Font menu for text might be shown by text-specific logic if needed (e.g. font resize handle)
+                    hide_obscure_properties_panel()
                 else: # Non-image, non-text selected via handle, or no selection change
                     hide_font_menu()
                     hide_image_properties_panel()
+                    hide_obscure_properties_panel()
 
             else: # No handle was clicked, proceed with element selection (click-through)
                 all_page_elements_with_indices = list(enumerate(state['config']['pages'][state['page_num']]['elements']))
@@ -287,6 +328,7 @@ def handle_mousebuttondown(event, state, window, manager: pygame_gui.UIManager):
                     state['selected_idx'] = None
                     hide_font_menu()
                     hide_image_properties_panel()
+                    hide_obscure_properties_panel()
                     state['editing_idx'] = None # Clear editing_idx if nothing selected
                 else:
                     def get_z_order(element_type):
@@ -346,14 +388,25 @@ def handle_mousebuttondown(event, state, window, manager: pygame_gui.UIManager):
                             element_rect_display = pygame.Rect(element_screen_x, element_screen_y, el_w_bounds * state['zoom'], el_h_bounds * state['zoom'])
                             show_image_properties_panel(manager, newly_selected_el, element_rect_display)
                             hide_font_menu()
+                        elif newly_selected_el.get('type') == 'obscure':
+                            el_x_bounds, el_y_bounds, el_w_bounds, el_h_bounds, _, _ = get_element_bounds(newly_selected_el, SCALE/state['zoom'])
+                            element_screen_x = canvas_x + el_x_bounds * state['zoom']
+                            element_screen_y = canvas_y + el_y_bounds * state['zoom']
+                            element_rect_display = pygame.Rect(element_screen_x, element_screen_y, el_w_bounds * state['zoom'], el_h_bounds * state['zoom'])
+                            show_obscure_properties_panel(manager, newly_selected_el, element_rect_display)
+                            state['editing_idx'] = new_selected_original_idx # Ensure editing_idx is set for obscure
+                            hide_font_menu()
+                            hide_image_properties_panel()
                         elif newly_selected_el.get('type') == 'text':
                              # If it is a text element but not double-clicked for editing, font menu should be hidden.
                              # If a properties panel for selected non-editing text is desired, it would be shown here.
                             hide_font_menu()
                             hide_image_properties_panel()
+                            hide_obscure_properties_panel()
                         else: # Other types like rectangle
                             hide_font_menu()
                             hide_image_properties_panel()
+                            hide_obscure_properties_panel()
                     
                     # Store information for the *next* potential double click on this element
                     state['last_click_idx_for_double_click'] = new_selected_original_idx
@@ -620,6 +673,7 @@ def reset_text_edit_mode(state):
     state['text_cursor_pos'] = 0
     hide_font_menu()
     hide_image_properties_panel() # Also hide image panel when text edit mode resets
+    hide_obscure_properties_panel() # Also hide obscure panel
 
 def handle_ui_event(event, state, save_config_func, manager):
     """Handle UI events from pygame_gui"""
@@ -722,13 +776,19 @@ def handle_ui_event(event, state, save_config_func, manager):
                     del state['config']['pages'][state['page_num']]['elements'][state['editing_idx']]
                     reset_text_edit_mode(state)
                     state['selected_idx'] = None
+            elif ui_element == state.get('btn_add_obscure'):
+                state['insert_mode'] = 'obscure'
+                state['tool_mode'] = None
+                pygame.mouse.set_visible(False)
             return True
 
         elif event.user_type == pygame_gui.UI_DROP_DOWN_MENU_CHANGED or event.user_type == pygame_gui.UI_TEXT_ENTRY_FINISHED:
             if handle_font_menu_event(event, state['editing_idx'], state['config'], state['page_num']):
                 return True
-            # Pass selected_idx as editing_idx for image properties, as panel is tied to selection
             if handle_image_properties_event(event, state['selected_idx'], state['config'], state['page_num']):
+                return True
+            if handle_obscure_properties_event(event, state['selected_idx'], state['config'], state['page_num']):
+                state['redraw'] = True
                 return True
         
         elif state.get('file_dialog') and event.user_type == pygame_gui.UI_FILE_DIALOG_PATH_PICKED:

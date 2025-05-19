@@ -144,6 +144,43 @@ def draw_element(surface, element, selected=False, editing=False, current_text=N
                     err_blit_y = scaled_box_y + (scaled_box_height - err_surf.get_height()) // 2
                     surface.blit(err_surf, (err_blit_x, err_blit_y))
 
+    elif el_type == 'obscure':
+        # Dies wird benutzt um Infos in Dokumenten zu schwärzen.
+        mode = element.get('mode', 'pixelate')
+        if scaled_box_width > 0 and scaled_box_height > 0:
+            if mode == 'pixelate':
+                # Pixelate: downscale and upscale the area
+                try:
+                    sub_surface = surface.subsurface((scaled_box_x, scaled_box_y, scaled_box_width, scaled_box_height)).copy()
+                    factor = 0.08  # 8% of original size
+                    small = pygame.transform.smoothscale(sub_surface, (max(1,int(scaled_box_width*factor)), max(1,int(scaled_box_height*factor))))
+                    pixelated = pygame.transform.scale(small, (scaled_box_width, scaled_box_height))
+                    surface.blit(pixelated, (scaled_box_x, scaled_box_y))
+                except Exception as e:
+                    pygame.draw.rect(surface, (0,0,0), (scaled_box_x, scaled_box_y, scaled_box_width, scaled_box_height))
+            elif mode == 'blur':
+                # Simple box blur: average color in a grid
+                try:
+                    sub_surface = surface.subsurface((scaled_box_x, scaled_box_y, scaled_box_width, scaled_box_height)).copy()
+                    arr = pygame.surfarray.pixels3d(sub_surface)
+                    import numpy as np
+                    kernel_size = 7
+                    arr_blur = arr.copy()
+                    for y in range(arr.shape[1]):
+                        for x in range(arr.shape[0]):
+                            x0 = max(0, x - kernel_size//2)
+                            x1 = min(arr.shape[0], x + kernel_size//2 + 1)
+                            y0 = max(0, y - kernel_size//2)
+                            y1 = min(arr.shape[1], y + kernel_size//2 + 1)
+                            arr_blur[x, y] = np.mean(arr[x0:x1, y0:y1], axis=(0,1))
+                    pygame.surfarray.blit_array(sub_surface, arr_blur)
+                    surface.blit(sub_surface, (scaled_box_x, scaled_box_y))
+                except Exception as e:
+                    pygame.draw.rect(surface, (0,0,0), (scaled_box_x, scaled_box_y, scaled_box_width, scaled_box_height))
+            elif mode == 'blacken':
+                pygame.draw.rect(surface, (0,0,0), (scaled_box_x, scaled_box_y, scaled_box_width, scaled_box_height))
+            pygame.draw.rect(surface, (0,0,0), (scaled_box_x, scaled_box_y, scaled_box_width, scaled_box_height), 1)
+
     return None, 0, 0
 
 

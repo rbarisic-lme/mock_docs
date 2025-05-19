@@ -114,8 +114,14 @@ def create_toolbar_buttons(manager, window_height):
         manager=manager, 
         object_id='#add_rect'
     )
+    btn_add_obscure = UIButton(
+        relative_rect=pygame.Rect(20, toolbar_y_start + 4 * (toolbar_btn_h + toolbar_btn_gap), toolbar_btn_w, toolbar_btn_h),
+        text='(5) Obscure',
+        manager=manager,
+        object_id='#add_obscure'
+    )
     
-    return [btn_select, btn_add_text, btn_add_image, btn_add_rect]
+    return [btn_select, btn_add_text, btn_add_image, btn_add_rect, btn_add_obscure]
 
 def update_toolbar_highlight(toolbar_buttons, tool_mode, insert_mode):
     """Update the highlighting of toolbar buttons based on active tool"""
