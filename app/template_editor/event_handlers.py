@@ -39,14 +39,26 @@ def handle_keyboard_event(event, state, manager: pygame_gui.UIManager):
         # If no UI text input is active, proceed with existing application-level keyboard handling.
         if event.key == pygame.K_ESCAPE:
             if state['text_edit_mode']:
-                reset_text_edit_mode(state)
+                reset_text_edit_mode(state) # This already hides panels
+                state['selected_idx'] = None
+                state['selected_indices'] = []
+                state['tool_mode'] = 'select' # Ensure back to select mode
                 pygame.mouse.set_visible(True)
             elif state['insert_mode']:
                 state['insert_mode'] = None
                 state['insert_image_path'] = None
+                state['tool_mode'] = 'select' # Switch to select mode
                 pygame.mouse.set_visible(True)
-            else:
-                state['running'] = False
+            elif state.get('selected_idx') is not None or state.get('selected_indices'):
+                state['selected_idx'] = None
+                state['selected_indices'] = []
+                hide_font_menu()
+                hide_image_properties_panel()
+                hide_obscure_properties_panel()
+                state['editing_idx'] = None # Clear editing_idx for properties
+                state['tool_mode'] = 'select' # Ensure select mode
+            # else: # Previously, this would set state['running'] = False
+                # Now, Escape does nothing further if not in text_edit, insert, or selection mode.
             return True
         
         elif state['text_edit_mode'] and state['editing_idx'] is not None:
@@ -227,14 +239,30 @@ def handle_mousebuttondown(event, state, window, manager: pygame_gui.UIManager):
             return True
 
         elif state['insert_mode'] == 'image' and state['insert_image_path']:
+            actual_w, actual_h = 200, 200 # Default/fallback
+            relative_image_path = state['insert_image_path'] # Assume it might not be made relative yet
+
+            try:
+                # state['insert_image_path'] should be the full path at this stage
+                img_to_place = pygame.image.load(state['insert_image_path'])
+                actual_w, actual_h = img_to_place.get_size()
+                # Convert the full path to relative for storing in config
+                relative_image_path = os.path.relpath(state['insert_image_path'], INPUT_IMG_DIR)
+            except pygame.error as e:
+                print(f"Error loading image {state['insert_image_path']} for dimensions: {e}. Using default size and potentially incorrect path.")
+            except ValueError as e: # Catches relpath errors if paths are not on the same drive (Windows)
+                print(f"Error creating relative path for {state['insert_image_path']} against {INPUT_IMG_DIR}: {e}. Storing original path.")
+                # In this case, relative_image_path remains state['insert_image_path'] (the full one)
+                # This might need further handling depending on how paths are resolved later.
+
             new_el = {
                 'type': 'image',
                 'x': cx,
                 'y': cy,
-                'width': 200,
-                'height': 200,
-                'value': state['insert_image_path'],
-                'padding': {'left': 0, 'top': 0, 'right': 0, 'bottom': 0} # Initialize with default padding
+                'width': actual_w, # Use actual dimensions
+                'height': actual_h, # Use actual dimensions
+                'value': relative_image_path, # Store relative path
+                'padding': {'left': 0, 'top': 0, 'right': 0, 'bottom': 0}
             }
             state['config']['pages'][state['page_num']]['elements'].append(new_el)
             new_idx = len(state['config']['pages'][state['page_num']]['elements']) - 1
@@ -372,103 +400,123 @@ def handle_mousebuttondown(event, state, window, manager: pygame_gui.UIManager):
                     hide_image_properties_panel()
                     hide_obscure_properties_panel()
 
-            else: # No handle was clicked, proceed with element selection (click-through)
-                all_page_elements_with_indices = list(enumerate(state['config']['pages'][state['page_num']]['elements']))
-                overlapping_elements_details = [] # List of (element_data, original_index)
+            else: # No handle was clicked, proceed with element selection/cycling
+                CLICK_AREA_TOLERANCE = 5 # Pixels for considering clicks in the same area for cycling
+                
+                # Check if this click is a continuation of a cycle
+                is_cycle_continuation = False
+                if state.get('last_selection_cycle_click_pos'):
+                    last_cx, last_cy = state['last_selection_cycle_click_pos']
+                    if abs(cx - last_cx) < CLICK_AREA_TOLERANCE / state['zoom'] and \
+                       abs(cy - last_cy) < CLICK_AREA_TOLERANCE / state['zoom']:
+                        is_cycle_continuation = True
+                
+                if not is_cycle_continuation:
+                    # New click area, reset cycle state
+                    state['overlapping_elements_at_cycle_pos'] = []
+                    state['last_selected_in_cycle_original_idx'] = None
 
-                for original_idx, el_data in all_page_elements_with_indices:
+                state['last_selection_cycle_click_pos'] = (cx, cy)
+
+                # Find all elements at the current click position (cx, cy)
+                current_overlapping_elements = []
+                for original_idx, el_data in enumerate(state['config']['pages'][state['page_num']]['elements']):
                     x_el, y_el, w_el, h_el, _, _ = get_element_bounds(el_data, SCALE/state['zoom'])
                     if x_el <= cx <= x_el + w_el and y_el <= cy <= y_el + h_el:
-                        overlapping_elements_details.append((el_data, original_idx))
+                        current_overlapping_elements.append((el_data, original_idx))
+                
+                current_overlapping_elements.sort(key=get_z_order_key) # Sort them by Z-order
 
-                if not overlapping_elements_details:
+                if not current_overlapping_elements:
                     state['selected_idx'] = None
+                    state['selected_indices'] = []
                     hide_font_menu()
                     hide_image_properties_panel()
                     hide_obscure_properties_panel()
-                    state['editing_idx'] = None # Clear editing_idx if nothing selected
+                    state['editing_idx'] = None
+                    state['overlapping_elements_at_cycle_pos'] = []
+                    state['last_selected_in_cycle_original_idx'] = None
                 else:
-                    def get_z_order(element_type):
-                        if element_type == 'rectangle': return 0
-                        if element_type == 'image': return 1
-                        if element_type == 'text': return 2
-                        return 3 # Default for others
+                    newly_selected_original_idx = -1
+                    last_selected_in_cycle_original_idx = state.get('last_selected_in_cycle_original_idx')
 
-                    overlapping_elements_details.sort(key=lambda item: (get_z_order(item[0].get('type')), item[1]))
-
-                    current_selected_original_idx = state['selected_idx']
-                    found_current_in_overlap_at_sorted_idx = -1
-                    if current_selected_original_idx is not None:
-                        for i, (el_data, original_idx) in enumerate(overlapping_elements_details):
-                            if original_idx == current_selected_original_idx:
-                                found_current_in_overlap_at_sorted_idx = i
+                    if is_cycle_continuation and last_selected_in_cycle_original_idx is not None:
+                        # Find index of last_selected_in_cycle_original_idx in current_overlapping_elements
+                        found_idx_in_current_overlap = -1
+                        for i, (el_data, original_idx) in enumerate(current_overlapping_elements):
+                            if original_idx == last_selected_in_cycle_original_idx:
+                                found_idx_in_current_overlap = i
                                 break
-                    
-                    new_selected_original_idx = -1
-                    if found_current_in_overlap_at_sorted_idx != -1:
-                        next_sorted_idx = (found_current_in_overlap_at_sorted_idx + 1) % len(overlapping_elements_details)
-                        new_selected_original_idx = overlapping_elements_details[next_sorted_idx][1]
+                        
+                        if found_idx_in_current_overlap != -1:
+                            next_idx_in_current_overlap = (found_idx_in_current_overlap + 1) % len(current_overlapping_elements)
+                            newly_selected_original_idx = current_overlapping_elements[next_idx_in_current_overlap][1]
+                        else:
+                            # Last selected not in current overlap (e.g. mouse moved slightly off it), select topmost
+                            newly_selected_original_idx = current_overlapping_elements[0][1]
                     else:
-                        new_selected_original_idx = overlapping_elements_details[-1][1] # Topmost
+                        # Not a cycle continuation or no previous selection in cycle, select topmost
+                        newly_selected_original_idx = current_overlapping_elements[0][1]
 
-                    state['selected_idx'] = new_selected_original_idx
-                    newly_selected_el = state['config']['pages'][state['page_num']]['elements'][new_selected_original_idx]
-                    state['editing_idx'] = new_selected_original_idx # Set editing_idx for potential property panel
-                    
+                    state['selected_idx'] = newly_selected_original_idx
+                    state['selected_indices'] = [newly_selected_original_idx] # Single select for now
+                    state['last_selected_in_cycle_original_idx'] = newly_selected_original_idx
+                    state['overlapping_elements_at_cycle_pos'] = [(el[0], el[1]) for el in current_overlapping_elements] # Store tuples
+
+                    newly_selected_el_config = state['config']['pages'][state['page_num']]['elements'][newly_selected_original_idx]
+                    state['editing_idx'] = newly_selected_original_idx # For property panels
+
                     state['dragging'] = True
                     state['drag_start_mouse_canvas'] = (cx, cy)
-                    state['drag_start_el_x'] = newly_selected_el['x']
-                    state['drag_start_el_y'] = newly_selected_el['y']
+                    state['drag_start_el_x'] = newly_selected_el_config['x']
+                    state['drag_start_el_y'] = newly_selected_el_config['y']
 
                     current_time = pygame.time.get_ticks() / 1000
-                    # Use a more specific state key for double click tracking to avoid conflict with general last_click_idx
-                    if (newly_selected_el['type'] == 'text' and 
-                        current_time - state.get('last_click_time_for_double_click', 0) < state['double_click_threshold'] and
-                        state.get('last_click_idx_for_double_click') == new_selected_original_idx):
+                    if (newly_selected_el_config['type'] == 'text' and 
+                        state.get('last_click_idx_for_double_click') == newly_selected_original_idx and 
+                        current_time - state.get('last_click_time_for_double_click', 0) < state['double_click_threshold']):
                         state['text_edit_mode'] = True
-                        state['editing_idx'] = new_selected_original_idx
-                        state['editing_text'] = newly_selected_el['value']
+                        state['editing_text'] = newly_selected_el_config['value']
                         state['text_cursor_pos'] = len(state['editing_text'])
-                        
-                        el_x_bounds, el_y_bounds, el_w_bounds, el_h_bounds, _, _ = get_element_bounds(newly_selected_el, SCALE/state['zoom'])
-                        element_screen_x = canvas_x + el_x_bounds * state['zoom']
-                        element_screen_y = canvas_y + el_y_bounds * state['zoom']
-                        element_rect_display = pygame.Rect(element_screen_x, element_screen_y, el_w_bounds * state['zoom'], el_h_bounds * state['zoom'])
-                        show_font_menu(newly_selected_el, element_rect_display, manager)
-                        hide_image_properties_panel() # Hide image panel if text edit starts
+                        el_bounds_x, el_bounds_y, el_bounds_w, el_bounds_h, _, _ = get_element_bounds(newly_selected_el_config, SCALE/state['zoom'])
+                        element_screen_x = canvas_x + el_bounds_x * state['zoom']
+                        element_screen_y = canvas_y + el_bounds_y * state['zoom']
+                        element_rect_display = pygame.Rect(element_screen_x, element_screen_y, el_bounds_w * state['zoom'], el_bounds_h * state['zoom'])
+                        show_font_menu(newly_selected_el_config, element_rect_display, manager)
+                        hide_image_properties_panel()
+                        hide_obscure_properties_panel()
                     else:
-                        # Not a double click or not a text element
-                        if newly_selected_el.get('type') == 'image':
-                            el_x_bounds, el_y_bounds, el_w_bounds, el_h_bounds, _, _ = get_element_bounds(newly_selected_el, SCALE/state['zoom'])
-                            element_screen_x = canvas_x + el_x_bounds * state['zoom']
-                            element_screen_y = canvas_y + el_y_bounds * state['zoom']
-                            element_rect_display = pygame.Rect(element_screen_x, element_screen_y, el_w_bounds * state['zoom'], el_h_bounds * state['zoom'])
-                            show_image_properties_panel(manager, newly_selected_el, element_rect_display)
+                        if newly_selected_el_config.get('type') == 'text':
+                            hide_font_menu() # Initially hide if not double-clicked for edit
+                            hide_image_properties_panel()
+                            hide_obscure_properties_panel()
+                        elif newly_selected_el_config.get('type') == 'image':
+                            el_bounds_x, el_bounds_y, el_bounds_w, el_bounds_h, _, _ = get_element_bounds(newly_selected_el_config, SCALE/state['zoom'])
+                            element_screen_x = canvas_x + el_bounds_x * state['zoom']
+                            element_screen_y = canvas_y + el_bounds_y * state['zoom']
+                            element_rect_display = pygame.Rect(element_screen_x, element_screen_y, el_bounds_w * state['zoom'], el_bounds_h * state['zoom'])
+                            show_image_properties_panel(manager, newly_selected_el_config, element_rect_display)
                             hide_font_menu()
-                        elif newly_selected_el.get('type') == 'obscure':
-                            el_x_bounds, el_y_bounds, el_w_bounds, el_h_bounds, _, _ = get_element_bounds(newly_selected_el, SCALE/state['zoom'])
-                            element_screen_x = canvas_x + el_x_bounds * state['zoom']
-                            element_screen_y = canvas_y + el_y_bounds * state['zoom']
-                            element_rect_display = pygame.Rect(element_screen_x, element_screen_y, el_w_bounds * state['zoom'], el_h_bounds * state['zoom'])
-                            show_obscure_properties_panel(manager, newly_selected_el, element_rect_display)
-                            state['editing_idx'] = new_selected_original_idx # Ensure editing_idx is set for obscure
+                            hide_obscure_properties_panel()
+                        elif newly_selected_el_config.get('type') == 'obscure':
+                            el_bounds_x, el_bounds_y, el_bounds_w, el_bounds_h, _, _ = get_element_bounds(newly_selected_el_config, SCALE/state['zoom'])
+                            element_screen_x = canvas_x + el_bounds_x * state['zoom']
+                            element_screen_y = canvas_y + el_bounds_y * state['zoom']
+                            element_rect_display = pygame.Rect(element_screen_x, element_screen_y, el_bounds_w * state['zoom'], el_bounds_h * state['zoom'])
+                            show_obscure_properties_panel(manager, newly_selected_el_config, element_rect_display)
                             hide_font_menu()
                             hide_image_properties_panel()
-                        elif newly_selected_el.get('type') == 'text':
-                             # If it is a text element but not double-clicked for editing, font menu should be hidden.
-                             # If a properties panel for selected non-editing text is desired, it would be shown here.
+                        else: # Rectangle or other types
                             hide_font_menu()
                             hide_image_properties_panel()
                             hide_obscure_properties_panel()
-                        else: # Other types like rectangle
-                            hide_font_menu()
-                            hide_image_properties_panel()
-                            hide_obscure_properties_panel()
-                    
-                    # Store information for the *next* potential double click on this element
-                    state['last_click_idx_for_double_click'] = new_selected_original_idx
                 
-                handled = True # Click was processed for selection/deselection
+                # Update double click tracking info for the *next* potential double click
+                if state['selected_idx'] is not None: # Only if something ended up selected
+                    state['last_click_idx_for_double_click'] = state['selected_idx']
+                else:
+                    state['last_click_idx_for_double_click'] = None
+                handled = True
 
     elif not state['insert_mode'] and not state['text_edit_mode'] and event.button in (2, 3):
         state['canvas_drag'] = True
@@ -841,26 +889,98 @@ def handle_ui_event(event, state, save_config_func, manager):
                 save_config_func(state['pdf_filename'], state['config'])
                 state['running'] = False
             elif button_id == '#confirm_image_selection' and state.get('image_select_dialog'):
-                selected_path = state['image_select_dialog'].selected_image_path
-                if selected_path:
-                    state['insert_mode'] = 'image' # Ready to place this image
-                    state['insert_image_path'] = selected_path
-                    state['image_select_dialog'].kill()
-                    state['image_select_dialog'] = None
-                    pygame.mouse.set_visible(False) # Hide cursor for placement
-                else:
-                    # Maybe provide feedback if no image was actually confirmed
-                    state['image_select_dialog'].kill()
-                    state['image_select_dialog'] = None
-                    state['insert_mode'] = None # Cancelled or no selection
+                selected_path = state['image_select_dialog'].selected_image_path # This is a FULL path
+                element_idx_to_update = state.pop('element_idx_for_image_update', None)
+
+                if element_idx_to_update is not None: # Handling update for an existing (e.g., merged) image
+                    if selected_path:
+                        try:
+                            img_for_update = pygame.image.load(selected_path) # Load from FULL path
+                            img_orig_w, img_orig_h = img_for_update.get_size()
+                            
+                            relative_selected_path = selected_path
+                            try:
+                                relative_selected_path = os.path.relpath(selected_path, INPUT_IMG_DIR)
+                            except ValueError as e:
+                                print(f"Error creating relative path for {selected_path} against {INPUT_IMG_DIR}: {e}. Storing original path.")
+
+                            current_page_elements = state['config']['pages'][state['page_num']]['elements']
+                            if 0 <= element_idx_to_update < len(current_page_elements):
+                                target_element = current_page_elements[element_idx_to_update]
+
+                                # These are the bounds from the original multi-selection merge
+                                container_x = target_element['x']
+                                container_y = target_element['y']
+                                container_w = target_element['width']
+                                container_h = target_element['height']
+
+                                final_scaled_w = container_w
+                                final_scaled_h = container_h
+                                
+                                if img_orig_w > 0 and img_orig_h > 0: # Ensure valid original image dimensions
+                                    aspect_ratio = img_orig_w / img_orig_h
+                                    
+                                    # Scale to fit container width
+                                    final_scaled_w = container_w
+                                    final_scaled_h = final_scaled_w / aspect_ratio
+
+                                    # If that makes it too tall, scale to fit container height instead
+                                    if final_scaled_h > container_h:
+                                        final_scaled_h = container_h
+                                        final_scaled_w = final_scaled_h * aspect_ratio
+                                    
+                                    final_scaled_w = int(round(final_scaled_w))
+                                    final_scaled_h = int(round(final_scaled_h))
+                                else: # Fallback if original image dimensions are invalid
+                                    final_scaled_w = 0
+                                    final_scaled_h = 0
+
+                                target_element['value'] = relative_selected_path
+                                target_element['width'] = final_scaled_w
+                                target_element['height'] = final_scaled_h
+                                # Adjust x and y to center the new tight bounds within the original container bounds
+                                target_element['x'] = container_x + (container_w - final_scaled_w) / 2
+                                target_element['y'] = container_y + (container_h - final_scaled_h) / 2
+                                
+                                push_history(state)
+                                state['redraw'] = True
+                                print(f"Image element at index {element_idx_to_update} updated with image: {relative_selected_path}. New bounds: {target_element['x']:.1f}x{target_element['y']:.1f}, {target_element['width']}x{target_element['height']}")
+                            else:
+                                print(f"Error: Invalid index {element_idx_to_update} for image update.")
+                        except pygame.error as e:
+                            print(f"Error loading image {selected_path} for update: {e}")
+                        except Exception as e:
+                            print(f"Error updating image element: {e}")
+                    else:
+                        print(f"Image selection NOT made for element at index {element_idx_to_update}.")
                     state['tool_mode'] = 'select'
                     pygame.mouse.set_visible(True)
+                
+                elif selected_path: # Original flow: preparing to add a new image
+                    state['insert_mode'] = 'image' 
+                    state['insert_image_path'] = selected_path # Store FULL path temporarily for placement
+                    pygame.mouse.set_visible(False) 
+                else: # Original flow but no image selected (dialog cancelled essentially)
+                    state['insert_mode'] = None 
+                    state['tool_mode'] = 'select'
+                    pygame.mouse.set_visible(True)
+                
+                if state.get('image_select_dialog'):
+                    state['image_select_dialog'].kill()
+                    state['image_select_dialog'] = None
                 return True 
+
             elif button_id == '#cancel_image_selection' and state.get('image_select_dialog'):
-                state['image_select_dialog'].kill()
-                state['image_select_dialog'] = None
-                state['insert_mode'] = None # Cancelled selection process
-                state['tool_mode'] = 'select'
+                element_idx_to_update = state.pop('element_idx_for_image_update', None) 
+                if element_idx_to_update is not None:
+                    print(f"Image selection cancelled for updating merged element at index {element_idx_to_update}.")
+                
+                # Standard cancel behavior
+                if state.get('image_select_dialog'): # Check if dialog exists before killing
+                    state['image_select_dialog'].kill()
+                    state['image_select_dialog'] = None
+                state['insert_mode'] = None 
+                state['tool_mode'] = 'select' # Revert to select mode
                 pygame.mouse.set_visible(True)
                 return True
             elif hasattr(event.ui_element, 'object_ids') and event.ui_element.object_ids and '#remove_text_node' in event.ui_element.object_ids[-1]:
@@ -1142,6 +1262,17 @@ def undo_history(state):
         state['history_index'] -= 1
         state['config'] = copy.deepcopy(state['history'][state['history_index']])
         state['selected_idx'] = None
+        state['selected_indices'] = [] # Clear multi-select on undo
         state['editing_idx'] = None
         state['text_edit_mode'] = False
+        hide_font_menu()
+        hide_image_properties_panel()
+        hide_obscure_properties_panel()
         state['redraw'] = True 
+
+def get_z_order_key(element_tuple):
+    el_data, original_idx = element_tuple
+    el_type = el_data.get('type')
+    type_order = {'text': 0, 'image': 1, 'obscure': 2, 'rectangle': 3} # Lower is "on top"
+    type_z = type_order.get(el_type, 99) # Default for others
+    return (type_z, -original_idx) # Higher original_idx (later in list) is on top for same type 

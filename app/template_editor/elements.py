@@ -1,5 +1,6 @@
 import pygame
-from app.template_editor.constants import SCALE, HIGHLIGHT_COLOR
+import os
+from app.template_editor.constants import SCALE, HIGHLIGHT_COLOR, INPUT_IMG_DIR
 
 def draw_element(surface, element, selected=False, editing=False, current_text=None, show_cursor=False, cursor_pos=0, scale=1.0):
     """
@@ -92,7 +93,13 @@ def draw_element(surface, element, selected=False, editing=False, current_text=N
             img_path = element.get('value')
             if img_path:
                 try:
-                    img_surf = pygame.image.load(img_path)
+                    # Construct full path if img_path is relative
+                    if not os.path.isabs(img_path):
+                        full_img_path = os.path.join(INPUT_IMG_DIR, img_path)
+                    else:
+                        full_img_path = img_path
+
+                    img_surf = pygame.image.load(full_img_path)
                     img_orig_w, img_orig_h = img_surf.get_size()
 
                     if img_orig_w > 0 and img_orig_h > 0:
@@ -136,7 +143,7 @@ def draw_element(surface, element, selected=False, editing=False, current_text=N
                         raise ValueError("Original image dimensions are zero.")
 
                 except Exception as e:
-                    print(f"Error loading/drawing image {img_path}: {e}")
+                    print(f"Error loading/drawing image {img_path} (resolved to {full_img_path if 'full_img_path' in locals() else 'N/A'}): {e}")
                     # Draw an X or error message on the box
                     font = pygame.font.Font(None, max(1,int(20 * scale))) # Scale error font size
                     err_surf = font.render("X", True, (255,0,0))

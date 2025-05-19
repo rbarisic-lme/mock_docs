@@ -1,0 +1,58 @@
+{
+  "#merge_multi_text": {
+    "normal_bg": "#000000",
+    "hover_bg": "#000000",
+    "active_bg": "#000000",
+    "normal_fg": "#000000",
+    "hover_fg": "#000000",
+    "active_fg": "#000000",
+    "images": {
+      "normal_image": {
+        "package": "app.assets",
+        "resource": "icon_merge_to_text.png"
+      }
+    }
+  },
+  "#merge_multi_image": {
+    "normal_bg": "#000000",
+    "hover_bg": "#000000",
+    "active_bg": "#000000",
+    "normal_fg": "#000000",
+    "hover_fg": "#000000",
+    "active_fg": "#000000",
+    "images": {
+      "normal_image": {
+        "package": "app.assets",
+        "resource": "icon_merge_to_image.png"
+      }
+    }
+  },
+  "#merge_multi_rect": {
+    "normal_bg": "#000000",
+    "hover_bg": "#000000",
+    "active_bg": "#000000",
+    "normal_fg": "#000000",
+    "hover_fg": "#000000",
+    "active_fg": "#000000",
+    "images": {
+      "normal_image": {
+        "package": "app.assets",
+        "resource": "icon_merge_to_rect.png"
+      }
+    }
+  },
+  "#merge_multi_obscure": {
+    "normal_bg": "#000000",
+    "hover_bg": "#000000",
+    "active_bg": "#000000",
+    "normal_fg": "#000000",
+    "hover_fg": "#000000",
+    "active_fg": "#000000",
+    "images": {
+      "normal_image": {
+        "package": "app.assets",
+        "resource": "icon_merge_to_obscure.png"
+      }
+    }
+  }
+}

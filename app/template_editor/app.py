@@ -18,7 +18,7 @@ from app.template_editor.canvas import (
 from app.template_editor.ui_components import (
     ListFileSelectWindow, create_toolbar_buttons, update_toolbar_highlight,
     create_zoom_controls, update_zoom_controls, create_page_controls,
-    update_page_controls, draw_toolbar_backgrounds
+    update_page_controls, draw_toolbar_backgrounds, ImageFileSelectWindow
 )
 from app.template_editor.event_handlers import (
     handle_keyboard_event, handle_mousewheel_event, handle_mousebuttondown,
@@ -39,7 +39,7 @@ def initialize_editor():
     screen_width, screen_height = info.current_w, info.current_h
     window = pygame.display.set_mode((min(1600, screen_width - 100), min(1000, screen_height - 100)), pygame.RESIZABLE)
     pygame.display.set_caption('PDF Template Visual Editor')
-    manager = pygame_gui.UIManager((screen_width, screen_height))
+    manager = pygame_gui.UIManager((screen_width, screen_height), 'app/assets/theme.json')
     clock = pygame.time.Clock()
     bg_texture = pygame.image.load(BG_TEXTURE_PATH)
     bg_texture_rect = bg_texture.get_rect()
@@ -288,12 +288,11 @@ def main():
     # Create merge toolbar panel once
     if 'merge_toolbar_panel' not in state or not state['merge_toolbar_panel']:
         state['merge_toolbar_panel'] = MergeToolbarPanel(manager, on_merge_callback=lambda merge_type: state.__setitem__('merge_toolbar_merge_requested_type', merge_type))
-    
+        state['merge_toolbar_panel'].hide() # Initially hide it
+
     # Main event loop
     while state['running']:
         time_delta = clock.tick(60)/1000.0
-        # Debug: print selected_indices every frame
-        print(f"[DEBUG] main loop selected_indices: {state.get('selected_indices')}")
         
         # Handle events
         for event in pygame.event.get():
@@ -372,6 +371,39 @@ def main():
             state = update_editor_ui(state, window, manager)
             # Fall through to UI update section below to refresh highlights etc.
 
+        # Handle request to select an image for a newly merged image element
+        element_idx_for_image_update_val = state.pop('show_image_select_for_element_idx', None)
+        if element_idx_for_image_update_val is not None:
+            if not state.get('image_select_dialog'): # Ensure dialog isn't already open
+                # Store the index for when the dialog confirms/cancels
+                state['element_idx_for_image_update'] = element_idx_for_image_update_val
+                
+                image_files_full_paths = []
+                try:
+                    image_files_full_paths = [
+                        os.path.join(INPUT_IMG_DIR, f) 
+                        for f in os.listdir(INPUT_IMG_DIR) 
+                        if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif'))
+                    ]
+                except FileNotFoundError:
+                    print(f"Error: Directory {INPUT_IMG_DIR} not found when trying to select image for merged element.")
+
+                if image_files_full_paths:
+                    dialog_rect = pygame.Rect(0, 0, 500, 400) # Adjust size as needed
+                    screen_width, screen_height = manager.window_resolution
+                    dialog_rect.center = (screen_width // 2, screen_height // 2)
+                    state['image_select_dialog'] = ImageFileSelectWindow(
+                        rect=dialog_rect,
+                        manager=manager,
+                        image_files=image_files_full_paths,
+                        input_img_dir=INPUT_IMG_DIR
+                    )
+                else:
+                    print(f'No images found in {INPUT_IMG_DIR} to assign to merged element.')
+                    # Clear the pending update if no images can be selected
+                    if 'element_idx_for_image_update' in state:
+                         del state['element_idx_for_image_update']
+
         if state.get('page_changed'):
             state['doc_img_full'] = render_document_page(state['pdf_path'], state['page_num'])
             state['doc_rect_full'] = state['doc_img_full'].get_rect()
@@ -393,6 +425,24 @@ def main():
         update_page_controls(
             [state['btn_prev_page'], state['page_label'], state['btn_next_page']],
             window.get_width(), state['page_num'], len(state['config']['pages']))
+        
+        # Update merge toolbar visibility based on selection
+        if state.get('merge_toolbar_panel'):
+            selected_indices_count = len(state.get('selected_indices', []))
+            if selected_indices_count > 1:
+                page_elements = state['config']['pages'][state['page_num']]['elements']
+                current_selected_indices = state.get('selected_indices', [])
+                zoom = state['zoom']
+                canvas_w, canvas_h = state['canvas_size']
+                scaled_w, scaled_h = int(canvas_w * zoom), int(canvas_h * zoom)
+                win_w, win_h = window.get_width(), window.get_height()
+                canvas_x_pos = (win_w - scaled_w) // 2 + state['pan_x']
+                canvas_y_pos = (win_h - scaled_h) // 2 + state['pan_y']
+                state['merge_toolbar_panel'].update_for_selection(current_selected_indices, page_elements, zoom, canvas_x_pos, canvas_y_pos)
+                state['merge_toolbar_panel'].show()
+            else:
+                state['merge_toolbar_panel'].hide()
+
         # Ensure save button position is updated on resize
         current_win_width = window.get_width()
         current_win_height = window.get_height()
@@ -519,9 +569,10 @@ def main():
             state['ui_needs_update'] = False
 
     # Save config on exit (if not already saved by button)
-    print("[app.py] Exiting main loop. Attempting to save config...")
-    if os.path.exists(os.path.join(CONFIG_DIR, f'{os.path.splitext(pdf_filename)[0]}.json')):
-         save_config(pdf_filename, config) # pdf_filename and config might be from the last loaded file
+    # print("[app.py] Exiting main loop. Attempting to save config...")
+    # if os.path.exists(os.path.join(CONFIG_DIR, f'{os.path.splitext(pdf_filename)[0]}.json')):
+    #      save_config(pdf_filename, config) # pdf_filename and config might be from the last loaded file
+    print("[app.py] Exiting main loop.")
     pygame.quit()
 
 if __name__ == '__main__':
