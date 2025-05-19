@@ -24,6 +24,24 @@ def handle_keyboard_event(event, state, manager: pygame_gui.UIManager):
         if event.key == pygame.K_z and (pygame.key.get_mods() & pygame.KMOD_CTRL):
             undo_history(state)
             return True
+        # Select All (Ctrl+A)
+        elif event.key == pygame.K_a and (pygame.key.get_mods() & pygame.KMOD_CTRL):
+            if not state['text_edit_mode']: # Only if not in text edit mode
+                page_elements = state['config']['pages'][state['page_num']].get('elements', [])
+                if page_elements:
+                    state['selected_indices'] = list(range(len(page_elements)))
+                    state['selected_idx'] = 0 # Select the first element by default
+                else:
+                    state['selected_indices'] = []
+                    state['selected_idx'] = None
+                hide_font_menu()
+                hide_image_properties_panel()
+                hide_obscure_properties_panel()
+                state['editing_idx'] = None # Clear any active property editing
+                state['ui_needs_update'] = True
+                print(f"[DEBUG] Ctrl+A pressed. Selected indices: {state['selected_indices']}")
+                return True
+
         # Check if a pygame_gui text input element has focus
         focused_element = manager.get_focus_set()
         if focused_element is not None and isinstance(focused_element, UITextEntryLine):
