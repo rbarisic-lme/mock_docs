@@ -1,19 +1,19 @@
 import os
 import pygame
 import pygame_gui
-from pygame_gui.windows import UIFileDialog, UIConfirmationDialog
+import copy
 
 # Import modules from our refactored structure
 from app.template_editor.constants import *
 from app.template_editor.pdf_utils import (
     pdf_page_to_image, load_config, save_config, 
-    get_pdf_thumbnails, get_preview_path
+    get_pdf_thumbnails
 )
 from app.template_editor.elements import draw_element, get_element_bounds
 from app.template_editor.canvas import (
-    clamp_pan, get_canvas_coords, get_canvas_position,
-    draw_rulers, draw_coordinates, draw_help_text, draw_resize_handles,
-    draw_document_rulers
+    clamp_pan, get_canvas_position,
+    draw_coordinates, draw_help_text, draw_resize_handles,
+    draw_marquee_rectangle
 )
 from app.template_editor.ui_components import (
     ListFileSelectWindow, create_toolbar_buttons, update_toolbar_highlight,
@@ -27,6 +27,9 @@ from app.template_editor.event_handlers import (
 )
 from app.template_editor.ui_text_properties import hide_font_menu
 import generate_config # Assuming it's at the root, sibling to template_editor.py
+from app.template_editor.ui_merge_toolbar import MergeToolbarPanel
+
+ICON_MERGE_PATH = 'app/assets/icon_merge.png'
 
 def initialize_editor():
     """Initialize the template editor application"""
@@ -142,7 +145,8 @@ def initialize_editor_state(config, doc_img_full):
         'insert_image_path': None,
         
         # Selection state
-        'selected_idx': None,
+        'selected_idx': None,  # Deprecated, use selected_indices
+        'selected_indices': [], # New: list of selected indices for multi-select
         'dragging': False,
         'offset': (0, 0),
         'canvas_drag': False,
@@ -170,9 +174,17 @@ def initialize_editor_state(config, doc_img_full):
         'last_click_pos': (0, 0),
         'double_click_threshold': DOUBLE_CLICK_THRESHOLD,
         
+        # Marquee selection state
+        'marquee_selecting': False,
+        'marquee_start': None,
+        'marquee_end': None,
+        
         # Runtime state
         'running': True,
         'file_dialog': None,
+        # Undo/redo state
+        'history': [],
+        'history_index': -1,
     }
     
     return state
@@ -183,7 +195,7 @@ def update_editor_ui(state, window, manager):
     
     # Create or update toolbar buttons
     toolbar_buttons = create_toolbar_buttons(manager, window_height)
-    state['btn_select'], state['btn_add_text'], state['btn_add_image'], state['btn_add_rect'], state['btn_add_obscure'] = toolbar_buttons
+    state['btn_select'], state['btn_add_text'], state['btn_add_image'], state['btn_add_rect'], state['btn_add_obscure'], state['btn_undo'] = toolbar_buttons
     
     # Create or update zoom controls
     zoom_controls = create_zoom_controls(manager, window_width, window_height)
@@ -201,6 +213,14 @@ def update_editor_ui(state, window, manager):
         object_id='#open_file'
     )
     
+    # Create 'Generate Fields' button at top left, next to 'Open File'
+    state['btn_generate_fields'] = pygame_gui.elements.UIButton(
+        relative_rect=pygame.Rect(150, 20, 160, 40),
+        text='Generate Fields',
+        manager=manager,
+        object_id='#generate_fields'
+    )
+
     # Create 'Save' button at bottom right
     state['btn_save'] = pygame_gui.elements.UIButton(
         relative_rect=pygame.Rect(window_width - 140, window_height - 60, 120, 40),
@@ -208,6 +228,18 @@ def update_editor_ui(state, window, manager):
         manager=manager,
         object_id='#save'
     )
+    
+    # Update merge toolbar panel position and visibility
+    if 'merge_toolbar_panel' in state and state['merge_toolbar_panel']:
+        page_elements = state['config']['pages'][state['page_num']]['elements']
+        selected_indices = state['selected_indices']
+        zoom = state['zoom']
+        canvas_w, canvas_h = state['canvas_size']
+        scaled_w, scaled_h = int(canvas_w * zoom), int(canvas_h * zoom)
+        win_w, win_h = window.get_width(), window.get_height()
+        canvas_x = (win_w - scaled_w) // 2 + state['pan_x']
+        canvas_y = (win_h - scaled_h) // 2 + state['pan_y']
+        state['merge_toolbar_panel'].update_for_selection(selected_indices, page_elements, zoom, canvas_x, canvas_y)
     
     return state
 
@@ -232,17 +264,20 @@ def main():
     
     # Render the first page
     doc_img_full = render_document_page(pdf_path, 0)
-    print(f"[app.py] First page rendered.")
+    print("[app.py] First page rendered.")
     
     # Initialize editor state
     state = initialize_editor_state(config, doc_img_full)
     state['pdf_filename'] = pdf_filename
     state['pdf_path'] = pdf_path
-    print(f"[app.py] Editor state initialized.")
-    
+    print("[app.py] Editor state initialized.")
+    # Push initial config to history for undo (only if history is empty)
+    if not state['history']:
+        state['history'].append(copy.deepcopy(state['config']))
+        state['history_index'] = 0
     # Set up UI elements
     state = update_editor_ui(state, window, manager)
-    print(f"[app.py] Editor UI updated.")
+    print("[app.py] Editor UI updated.")
     # Add initial toolbar highlight
     update_toolbar_highlight(
         [state['btn_select'], state['btn_add_text'], state['btn_add_image'], state['btn_add_rect'], state['btn_add_obscure']],
@@ -250,9 +285,15 @@ def main():
         state['insert_mode']
     )
     
+    # Create merge toolbar panel once
+    if 'merge_toolbar_panel' not in state or not state['merge_toolbar_panel']:
+        state['merge_toolbar_panel'] = MergeToolbarPanel(manager, on_merge_callback=lambda merge_type: state.__setitem__('merge_toolbar_merge_requested_type', merge_type))
+    
     # Main event loop
     while state['running']:
         time_delta = clock.tick(60)/1000.0
+        # Debug: print selected_indices every frame
+        print(f"[DEBUG] main loop selected_indices: {state.get('selected_indices')}")
         
         # Handle events
         for event in pygame.event.get():
@@ -396,10 +437,20 @@ def main():
         if 'elements' in current_page_config:
             all_elements_with_indices = list(enumerate(current_page_config.get('elements', [])))
             element_types_draw_order = ['rectangle', 'image', 'text']
+            # Calculate visible area in canvas coordinates
+            win_w, win_h = window.get_width(), window.get_height()
+            canvas_x, canvas_y = get_canvas_position(win_w, win_h, scaled_w, scaled_h, state['pan_x'], state['pan_y'])
+            viewport_rect = pygame.Rect(-canvas_x / state['zoom'], -canvas_y / state['zoom'], win_w / state['zoom'], win_h / state['zoom'])
             for el_type_to_draw in element_types_draw_order:
                 for original_idx, el_config in all_elements_with_indices:
                     if el_config.get('type') == el_type_to_draw:
-                        is_selected = (state['selected_idx'] == original_idx)
+                        # Get element bounds in canvas coordinates
+                        x, y = el_config.get('x', 0), el_config.get('y', 0)
+                        w, h = el_config.get('width', 0), el_config.get('height', 0)
+                        el_rect = pygame.Rect(x, y, w, h)
+                        if not viewport_rect.colliderect(el_rect):
+                            continue  # Skip drawing if not visible
+                        is_selected = (original_idx in state.get('selected_indices', []))
                         is_editing_this_element = (state['editing_idx'] == original_idx and state['text_edit_mode'])
                         current_text_for_draw = state['editing_text'] if is_editing_this_element else el_config.get('value', '')
                         text_cursor_pos_for_draw = state['text_cursor_pos'] if is_editing_this_element else 0
@@ -409,7 +460,12 @@ def main():
                                      cursor_pos=text_cursor_pos_for_draw, scale=state['zoom'])
             for original_idx, el_config in all_elements_with_indices:
                 if el_config.get('type') not in element_types_draw_order:
-                    is_selected = (state['selected_idx'] == original_idx)
+                    x, y = el_config.get('x', 0), el_config.get('y', 0)
+                    w, h = el_config.get('width', 0), el_config.get('height', 0)
+                    el_rect = pygame.Rect(x, y, w, h)
+                    if not viewport_rect.colliderect(el_rect):
+                        continue
+                    is_selected = (original_idx in state.get('selected_indices', []))
                     is_editing_this_element = (state['editing_idx'] == original_idx and state['text_edit_mode'])
                     current_text_for_draw = state['editing_text'] if is_editing_this_element else el_config.get('value', '')
                     text_cursor_pos_for_draw = state['text_cursor_pos'] if is_editing_this_element else 0
@@ -421,12 +477,17 @@ def main():
         # 4. Blit the fully drawn scaled_canvas (with PDF, rulers, elements) onto the main window
         window.blit(scaled_canvas, (canvas_x, canvas_y))
 
+        # Draw marquee selection rectangle (if active)
+        draw_marquee_rectangle(window, state, canvas_x, canvas_y, state['zoom'])
+
         # 5. Draw resize handles directly on the main window (if an element is selected)
-        if state['tool_mode'] == 'select' and state['selected_idx'] is not None and state['selected_idx'] < len(current_page_config.get('elements', [])):
-            selected_element_config = current_page_config['elements'][state['selected_idx']]
-            element_rect_unscaled = get_element_bounds(selected_element_config, state['zoom'])
-            draw_resize_handles(window, element_rect_unscaled, state['selected_idx'], state['config'], state['page_num'],
-                                canvas_x, canvas_y, state['zoom'])
+        if state['tool_mode'] == 'select' and state.get('selected_indices'):
+            for idx in state['selected_indices']:
+                if idx < len(current_page_config.get('elements', [])):
+                    selected_element_config = current_page_config['elements'][idx]
+                    element_rect_unscaled = get_element_bounds(selected_element_config, state['zoom'])
+                    draw_resize_handles(window, element_rect_unscaled, idx, state['config'], state['page_num'],
+                                        canvas_x, canvas_y, state['zoom'])
 
         # 6. Draw toolbar backgrounds (should be on top of canvas content, but below UI manager elements)
         draw_toolbar_backgrounds(window, window_width, window_height)
@@ -451,6 +512,11 @@ def main():
         
         # 9. Update the full display Surface to the screen
         pygame.display.update()
+
+        # Handle state changes flagged by event handlers (outside the event iteration loop)
+        if state.get('ui_needs_update'):
+            update_editor_ui(state, window, manager)
+            state['ui_needs_update'] = False
 
     # Save config on exit (if not already saved by button)
     print("[app.py] Exiting main loop. Attempting to save config...")

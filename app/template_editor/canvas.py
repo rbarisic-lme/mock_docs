@@ -200,3 +200,24 @@ def draw_resize_handles(window, _element_rect_scaled_is_unused, selected_idx, co
         else:
             pygame.draw.rect(window, (255, 255, 255), handle_draw_rect)
             pygame.draw.rect(window, (0, 0, 0), handle_draw_rect, 1) 
+
+def draw_marquee_rectangle(window, state, canvas_x, canvas_y, zoom):
+    if not state.get('marquee_selecting') or not state.get('marquee_start') or not state.get('marquee_end'):
+        return
+    x0, y0 = state['marquee_start']
+    x1, y1 = state['marquee_end']
+    x_min, x_max = min(x0, x1), max(x0, x1)
+    y_min, y_max = min(y0, y1), max(y0, y1)
+    # Convert canvas coords to screen coords
+    screen_x = canvas_x + x_min * zoom
+    screen_y = canvas_y + y_min * zoom
+    width = (x_max - x_min) * zoom
+    height = (y_max - y_min) * zoom
+    rect = pygame.Rect(screen_x, screen_y, width, height)
+    # Draw semi-transparent fill and border
+    color_fill = (100, 180, 255, 60)
+    color_border = (30, 120, 200, 180)
+    s = pygame.Surface((max(1, int(width)), max(1, int(height))), pygame.SRCALPHA)
+    s.fill(color_fill)
+    window.blit(s, (screen_x, screen_y))
+    pygame.draw.rect(window, color_border, rect, 2) 

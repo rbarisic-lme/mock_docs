@@ -18,6 +18,8 @@ A visual editor for creating and managing PDF document templates for automated d
 - Python 3.8+
 - [pip](https://pip.pypa.io/en/stable/)
 - Windows 10+ (tested; other OS may work with minor changes)
+- Tesseract 5.5.0 (https://github.com/tesseract-ocr/tesseract/releases/tag/5.5.0)
+  - with additional training tools for (e.g. german) language
 
 ## Installation
 

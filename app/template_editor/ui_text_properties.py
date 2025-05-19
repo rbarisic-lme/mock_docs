@@ -84,6 +84,9 @@ def show_font_menu(el, element_rect=None, manager=None):
         text_node_remove_btn.set_image(trash_icon)
         text_node_remove_btn.set_text('')  # Ensure no text overlays icon
     
+    # Convert to Obscure button
+    convert_btn = UIButton(pygame.Rect(10, panel_h-50, 160, 40), 'Convert to Obscure', manager, font_menu_panel, object_id='#convert_to_obscure')
+    
     # Replace UITextBox with UILabels for the note
     note_line_1_y = current_y + 150  # Y position of the first line of the note
     note_line_height = 20  # Approximate height for a UILabel line

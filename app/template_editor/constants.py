@@ -19,6 +19,7 @@ CURSOR_TEXT_PATH = os.path.join(_ASSETS_DIR, 'cursor_text.png')
 CURSOR_IMAGE_PATH = os.path.join(_ASSETS_DIR, 'cursor_image.png')
 ICON_TRASH_PATH = os.path.join(_ASSETS_DIR, 'icon_trash.png')
 ICON_RESIZE_PATH = os.path.join(_ASSETS_DIR, 'icon_resize.png')
+ICON_MERGE_PATH = os.path.join(_ASSETS_DIR, 'icon_merge.png')
 
 # Display settings
 PADDING = 80  # workspace padding around the document (display units)
