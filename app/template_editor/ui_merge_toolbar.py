@@ -7,16 +7,11 @@ from app.template_editor.constants import (
     _ASSETS_DIR,
 )
 
-ICON_MERGE_TO_TEXT = os.path.join(_ASSETS_DIR, 'icon_merge_to_text.png')
-ICON_MERGE_TO_IMAGE = os.path.join(_ASSETS_DIR, 'icon_merge_to_image.png')
-ICON_MERGE_TO_RECT = os.path.join(_ASSETS_DIR, 'icon_merge_to_rect.png')
-ICON_MERGE_TO_OBFUSCATE = os.path.join(_ASSETS_DIR, 'icon_merge_to_obfuscate.png')
-
 MERGE_TYPES = [
-    ('text', ICON_MERGE_TO_TEXT, 'To Text'),
-    ('image', ICON_MERGE_TO_IMAGE, 'To Image'),
-    ('rectangle', ICON_MERGE_TO_RECT, 'To Rect'),
-    ('obscure', ICON_MERGE_TO_OBFUSCATE, 'To Obfuscate'),
+    ('text', 'To Text'),
+    ('image', 'To Image'),
+    ('rectangle', 'To Rect'),
+    ('obscure', 'To Obscure'),
 ]
 
 BUTTON_HEIGHT=40
@@ -32,7 +27,7 @@ class MergeToolbarPanel(UIPanel):
         self.on_merge_callback = on_merge_callback
         self.merge_btns = []
         
-        for i, (merge_type, icon_path, tooltip) in enumerate(MERGE_TYPES):
+        for i, (merge_type, tooltip) in enumerate(MERGE_TYPES):
             btn = UIButton(
                 relative_rect=pygame.Rect(BUTTON_GAP + i * (BUTTON_WIDTH + BUTTON_GAP), BUTTON_GAP, BUTTON_WIDTH, BUTTON_HEIGHT),
                 text='',
@@ -50,7 +45,6 @@ class MergeToolbarPanel(UIPanel):
     def update_for_selection(self, selected_indices, page_elements, zoom, canvas_x, canvas_y):
         if len(selected_indices) > 1:
             min_x = min(page_elements[idx]['x'] for idx in selected_indices)
-            min_y = min(page_elements[idx]['y'] for idx in selected_indices)
             max_x = max(page_elements[idx]['x'] + page_elements[idx].get('width', 0) for idx in selected_indices)
             max_y = max(page_elements[idx]['y'] + page_elements[idx].get('height', 0) for idx in selected_indices)
             panel_w = len(MERGE_TYPES) * BUTTON_WIDTH + (len(MERGE_TYPES) + 1) * BUTTON_GAP

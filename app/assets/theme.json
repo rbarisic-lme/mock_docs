@@ -27,7 +27,7 @@
       }
     }
   },
-  "#merge_multi_rect": {
+  "#merge_multi_rectangle": {
     "normal_bg": "#000000",
     "hover_bg": "#000000",
     "active_bg": "#000000",

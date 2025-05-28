@@ -1,41 +1,38 @@
-import pytesseract
-from PIL import Image
-import numpy as np
+import os
+from .ocr_processors import TesseractProcessor, EasyOcrProcessor, OcrProcessor
+
+_ocr_processor_instance: OcrProcessor = None
+
+def get_ocr_processor() -> OcrProcessor:
+    global _ocr_processor_instance
+    if _ocr_processor_instance is None:
+        ocr_engine = os.environ.get("OCR_ENGINE", "tesseract").lower()
+        tesseract_cmd = os.environ.get("TESSERACT_CMD_PATH", 'C:\\Program Files\\Tesseract-OCR\\tesseract.exe')
+        easyocr_languages = os.environ.get("EASYOCR_LANGUAGES", "en").split(',')
+
+        if ocr_engine == "easyocr":
+            print("Using EasyOCR engine.")
+            try:
+                _ocr_processor_instance = EasyOcrProcessor(languages=easyocr_languages)
+            except ImportError as e:
+                print(f"Failed to initialize EasyOCR: {e}. Falling back to Tesseract.")
+                _ocr_processor_instance = TesseractProcessor(tesseract_cmd_path=tesseract_cmd)
+            except Exception as e:
+                 print(f"An unexpected error occurred while initializing EasyOCR: {e}. Falling back to Tesseract.")
+                 _ocr_processor_instance = TesseractProcessor(tesseract_cmd_path=tesseract_cmd)
+
+        elif ocr_engine == "tesseract":
+            print("Using Tesseract engine.")
+            _ocr_processor_instance = TesseractProcessor(tesseract_cmd_path=tesseract_cmd)
+        else:
+            print(f"Unknown OCR engine: {ocr_engine}. Defaulting to Tesseract.")
+            _ocr_processor_instance = TesseractProcessor(tesseract_cmd_path=tesseract_cmd)
+    return _ocr_processor_instance
 
 def ocr_image(image):
-    pytesseract.pytesseract.tesseract_cmd = 'C:\\Program Files\\Tesseract-OCR\\tesseract.exe'
-    
     """
-    Run OCR on a PIL Image or numpy array and return a list of dicts:
-    [{
-        'text': str,
-        'left': int,
-        'top': int,
-        'width': int,
-        'height': int,
-        'conf': float,
-        'font_size': int (estimated, optional)
-    }, ...]
+    Run OCR on a PIL Image or numpy array using the configured OCR engine.
+    Returns a list of dicts as specified by OcrProcessor.ocr_image.
     """
-    if isinstance(image, np.ndarray):
-        image = Image.fromarray(image)
-    data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
-    results = []
-    n_boxes = len(data['level'])
-    for i in range(n_boxes):
-        if int(data['conf'][i]) > 0 and data['text'][i].strip():
-            left, top, width, height = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
-            text = data['text'][i]
-            conf = float(data['conf'][i])
-            # Estimate font size as height (roughly)
-            font_size = height
-            results.append({
-                'text': text,
-                'left': left,
-                'top': top,
-                'width': width,
-                'height': height,
-                'conf': conf,
-                'font_size': font_size
-            })
-    return results 
+    processor = get_ocr_processor()
+    return processor.ocr_image(image)

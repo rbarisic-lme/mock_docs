@@ -5,6 +5,7 @@ import copy
 
 # Import modules from our refactored structure
 from app.template_editor.constants import *
+from app.template_editor.constants import TARGET_HEIGHT  # Explicit import for linter
 from app.template_editor.pdf_utils import (
     pdf_page_to_image, load_config, save_config, 
     get_pdf_thumbnails
@@ -18,12 +19,13 @@ from app.template_editor.canvas import (
 from app.template_editor.ui_components import (
     ListFileSelectWindow, create_toolbar_buttons, update_toolbar_highlight,
     create_zoom_controls, update_zoom_controls, create_page_controls,
-    update_page_controls, draw_toolbar_backgrounds, ImageFileSelectWindow
+    update_page_controls, draw_toolbar_backgrounds, ImageFileSelectWindow,
+    create_node_list_panel
 )
 from app.template_editor.event_handlers import (
     handle_keyboard_event, handle_mousewheel_event, handle_mousebuttondown,
     handle_mousebuttonup, handle_mousemotion, handle_ui_event,
-    reset_text_edit_mode
+    reset_text_edit_mode, smart_generate_fields
 )
 from app.template_editor.ui_text_properties import hide_font_menu
 import generate_config # Assuming it's at the root, sibling to template_editor.py
@@ -140,8 +142,8 @@ def initialize_editor_state(config, doc_img_full):
         'pan_y': 0,
         
         # Tool state
-        'tool_mode': 'select',  # 'select', 'text', 'image'
-        'insert_mode': None,    # None, 'text', 'image', 'image_select'
+        'tool_mode': 'select',  # 'select', 'text', 'image', 'smart_generate'
+        'insert_mode': None,    # None, 'text', 'image', 'image_select', 'rectangle', 'obscure'
         'insert_image_path': None,
         
         # Selection state
@@ -158,6 +160,14 @@ def initialize_editor_state(config, doc_img_full):
         'font_resizing_mode': None,
         'font_resize_start_mouse': (0,0),
         'orig_font_size': 18,
+        
+        # Copy/paste state
+        'copied_elements': [],  # List of copied elements
+        'copy_source_indices': [],  # Indices of the original elements that were copied
+        
+        # Smart generate state
+        'smart_generate_active': False,
+        'smart_generate_bounds': None,  # (x, y, width, height) of the marquee selection
         
         # Text editing state
         'text_edit_mode': False,
@@ -193,9 +203,15 @@ def update_editor_ui(state, window, manager):
     """Update the editor UI elements based on window size"""
     window_width, window_height = window.get_size()
     
+    # Remove previous node list panel if it exists
+    if 'node_list_panel' in state and state['node_list_panel']:
+        state['node_list_panel'].kill()
+        state['node_list_panel'] = None
+        state['node_selection_list'] = None
+
     # Create or update toolbar buttons
     toolbar_buttons = create_toolbar_buttons(manager, window_height)
-    state['btn_select'], state['btn_add_text'], state['btn_add_image'], state['btn_add_rect'], state['btn_add_obscure'], state['btn_undo'] = toolbar_buttons
+    state['btn_select'], state['btn_add_text'], state['btn_add_image'], state['btn_add_rect'], state['btn_add_obscure'], state['btn_smart_generate'], state['btn_undo'] = toolbar_buttons
     
     # Create or update zoom controls
     zoom_controls = create_zoom_controls(manager, window_width, window_height)
@@ -220,7 +236,7 @@ def update_editor_ui(state, window, manager):
         manager=manager,
         object_id='#generate_fields'
     )
-
+    
     # Create 'Save' button at bottom right
     state['btn_save'] = pygame_gui.elements.UIButton(
         relative_rect=pygame.Rect(window_width - 140, window_height - 60, 120, 40),
@@ -240,6 +256,15 @@ def update_editor_ui(state, window, manager):
         canvas_x = (win_w - scaled_w) // 2 + state['pan_x']
         canvas_y = (win_h - scaled_h) // 2 + state['pan_y']
         state['merge_toolbar_panel'].update_for_selection(selected_indices, page_elements, zoom, canvas_x, canvas_y)
+    
+    # --- Node List Panel ---
+    current_page_elements = state['config']['pages'][state['page_num']].get('elements', [])
+    selected_idx = state.get('selected_idx', None)
+    node_list_panel, node_selection_list = create_node_list_panel(
+        manager, window_width, window_height, current_page_elements, selected_idx
+    )
+    state['node_list_panel'] = node_list_panel
+    state['node_selection_list'] = node_selection_list
     
     return state
 
@@ -261,6 +286,7 @@ def main():
         print(f"[app.py] Config not loaded for {pdf_filename}. Exiting.")
         return
     print(f"[app.py] Document loaded: {pdf_path}")
+    print(f"[app.py] Document rendering standardized to approx. {TARGET_HEIGHT} pixels height for better performance")
     
     # Render the first page
     doc_img_full = render_document_page(pdf_path, 0)
@@ -280,7 +306,7 @@ def main():
     print("[app.py] Editor UI updated.")
     # Add initial toolbar highlight
     update_toolbar_highlight(
-        [state['btn_select'], state['btn_add_text'], state['btn_add_image'], state['btn_add_rect'], state['btn_add_obscure']],
+        [state['btn_select'], state['btn_add_text'], state['btn_add_image'], state['btn_add_rect'], state['btn_add_obscure'], state['btn_smart_generate']],
         state['tool_mode'],
         state['insert_mode']
     )
@@ -289,7 +315,7 @@ def main():
     if 'merge_toolbar_panel' not in state or not state['merge_toolbar_panel']:
         state['merge_toolbar_panel'] = MergeToolbarPanel(manager, on_merge_callback=lambda merge_type: state.__setitem__('merge_toolbar_merge_requested_type', merge_type))
         state['merge_toolbar_panel'].hide() # Initially hide it
-
+    
     # Main event loop
     while state['running']:
         time_delta = clock.tick(60)/1000.0
@@ -331,12 +357,61 @@ def main():
                     break # Exit event loop if UI event led to exit
                 continue # UI event was handled
             
+            # --- Node List Panel Selection Sync ---
+            if event.type == pygame_gui.UI_SELECTION_LIST_NEW_SELECTION:
+                if hasattr(event, 'ui_element') and event.ui_element == state.get('node_selection_list'):
+                    # Find the index of the selected item
+                    selected_label = event.text
+                    current_page_elements = state['config']['pages'][state['page_num']].get('elements', [])
+                    for idx, el in enumerate(current_page_elements):
+                        el_type = el.get('type', 'unknown')
+                        if el_type == 'text':
+                            preview = el.get('value', '')
+                            preview = preview[:20] + ('...' if len(preview) > 20 else '')
+                            label = f"{idx+1}. [Text] {preview}"
+                        elif el_type == 'image':
+                            label = f"{idx+1}. [Image] {el.get('value', '')}"
+                        elif el_type == 'rectangle':
+                            label = f"{idx+1}. [Rectangle]"
+                        elif el_type == 'obscure':
+                            label = f"{idx+1}. [Obscure]"
+                        else:
+                            label = f"{idx+1}. [{el_type.capitalize()}]"
+                        if label == selected_label:
+                            state['selected_idx'] = idx
+                            state['selected_indices'] = [idx]
+                            state['editing_idx'] = idx
+                            state['ui_needs_update'] = True
+                            break
+                    continue
+            
             # Note: manager.process_events(event) was moved to the top of the loop.
 
         if not state['running']:
             break # Exit main loop if state['running'] became false
 
         # Handle state changes flagged by event handlers (outside the event iteration loop)
+
+        # --- Handle Smart Generate Process ---
+        if state.get('smart_generate_process'):
+            bounds = state.get('smart_generate_bounds')
+            if bounds:
+                print(f"[app.py] Processing smart generate for bounds: {bounds}")
+                smart_generate_fields(state, bounds)
+                # Reset smart generate state after processing
+                state['smart_generate_active'] = False
+                state['smart_generate_bounds'] = None
+                state['smart_generate_process'] = False
+                state['tool_mode'] = 'select'  # Switch back to select mode
+                print("[app.py] Smart generate processed. Switched to select mode.")
+            else:
+                print("[app.py] Smart generate process was true, but no bounds found. Resetting.")
+                # Ensure state is reset even if bounds were missing for some reason
+                state['smart_generate_active'] = False
+                state['smart_generate_bounds'] = None
+                state['smart_generate_process'] = False
+                state['tool_mode'] = 'select'
+
         if state.get('reselect_file'):
             print("[app.py] Reselecting file...")
             # Save current work maybe? For now, just reselect.
@@ -417,7 +492,7 @@ def main():
 
         # --- UI Updates based on state (call these every frame after events) --- 
         update_toolbar_highlight(
-            [state['btn_select'], state['btn_add_text'], state['btn_add_image'], state['btn_add_rect'], state['btn_add_obscure']],
+            [state['btn_select'], state['btn_add_text'], state['btn_add_image'], state['btn_add_rect'], state['btn_add_obscure'], state['btn_smart_generate']],
             state['tool_mode'], state['insert_mode'])
         update_zoom_controls(
             [state['btn_minus'], state['btn_actual'], state['btn_plus'], state['btn_reset_pan'], state['zoom_label']],
@@ -476,7 +551,7 @@ def main():
                     scaled_doc_img = pygame.transform.scale(state['doc_img_full'], (scaled_w, scaled_h))
                     scaled_canvas.blit(scaled_doc_img, (0, 0)) 
                 except pygame.error as e:
-                    print(f"Error scaling document image: {e}. Scaled_w={scaled_w}, Scaled_h={scaled_h}") 
+                    print(f"Error scaling document image: {e}. Scaled_w={scaled_w}, Scaled_h={scaled_h}")
         else:
             pass
 
@@ -537,7 +612,7 @@ def main():
                     selected_element_config = current_page_config['elements'][idx]
                     element_rect_unscaled = get_element_bounds(selected_element_config, state['zoom'])
                     draw_resize_handles(window, element_rect_unscaled, idx, state['config'], state['page_num'],
-                                        canvas_x, canvas_y, state['zoom'])
+                                     canvas_x, canvas_y, state['zoom'])
 
         # 6. Draw toolbar backgrounds (should be on top of canvas content, but below UI manager elements)
         draw_toolbar_backgrounds(window, window_width, window_height)
@@ -568,12 +643,26 @@ def main():
             update_editor_ui(state, window, manager)
             state['ui_needs_update'] = False
 
-    # Save config on exit (if not already saved by button)
-    # print("[app.py] Exiting main loop. Attempting to save config...")
-    # if os.path.exists(os.path.join(CONFIG_DIR, f'{os.path.splitext(pdf_filename)[0]}.json')):
-    #      save_config(pdf_filename, config) # pdf_filename and config might be from the last loaded file
-    print("[app.py] Exiting main loop.")
-    pygame.quit()
-
-if __name__ == '__main__':
-    main() 
+        # --- Sync node list selection with canvas selection ---
+        # If the selected_idx changed (e.g., by canvas click), update the node list selection
+        if state.get('node_selection_list'):
+            current_page_elements = state['config']['pages'][state['page_num']].get('elements', [])
+            selected_idx = state.get('selected_idx', None)
+            list_items = state['node_selection_list'].item_list
+            if selected_idx is not None and 0 <= selected_idx < len(list_items):
+                # Deselect all items first
+                for item in list_items:
+                    item['selected'] = False
+                    if item['button_element'] is not None:
+                        item['button_element'].unselect()
+                # Select the desired item
+                list_items[selected_idx]['selected'] = True
+                if list_items[selected_idx]['button_element'] is not None:
+                    list_items[selected_idx]['button_element'].select()
+            else:
+                # Clear all selections in the UISelectionList
+                for item in state['node_selection_list'].item_list:
+                    item['selected'] = False
+                    if item['button_element'] is not None:
+                        item['button_element'].unselect()
+False

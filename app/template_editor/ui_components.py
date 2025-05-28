@@ -1,8 +1,8 @@
 import os
 import pygame
 import pygame_gui
-from pygame_gui.elements import UIButton, UILabel, UISelectionList, UIWindow, UIPanel, UIImage, UITextBox
-from app.template_editor.constants import TOOLBAR_BG_COLOR, PREVIEW_SIZE, THUMB_SIZE, CONFIG_DIR, INPUT_DIR, THUMBNAIL_SIZE
+from pygame_gui.elements import UIButton, UILabel, UISelectionList, UIWindow, UIImage, UITextBox
+from app.template_editor.constants import TOOLBAR_BG_COLOR, PREVIEW_SIZE, CONFIG_DIR, INPUT_DIR, THUMBNAIL_SIZE
 from app.template_editor.pdf_utils import get_preview_path
 
 class ListFileSelectWindow(UIWindow):
@@ -18,7 +18,8 @@ class ListFileSelectWindow(UIWindow):
             relative_rect=pygame.Rect(30, 30, 300, rect.height-120),
             item_list=pdf_files,
             manager=manager,
-            container=self
+            container=self,
+            default_selection=pdf_files[0] if pdf_files else None
         )
         
         # Create preview area
@@ -120,35 +121,53 @@ def create_toolbar_buttons(manager, window_height):
         manager=manager,
         object_id='#add_obscure'
     )
-    btn_undo = UIButton(
+    btn_smart_generate = UIButton(
         relative_rect=pygame.Rect(20, toolbar_y_start + 5 * (toolbar_btn_h + toolbar_btn_gap), toolbar_btn_w, toolbar_btn_h),
+        text='(6) Smart Gen',
+        manager=manager,
+        object_id='#smart_generate'
+    )
+    btn_undo = UIButton(
+        relative_rect=pygame.Rect(20, toolbar_y_start + 6 * (toolbar_btn_h + toolbar_btn_gap), toolbar_btn_w, toolbar_btn_h),
         text='(Ctrl+Z) Undo',
         manager=manager,
         object_id='#undo'
     )
     
-    return [btn_select, btn_add_text, btn_add_image, btn_add_rect, btn_add_obscure, btn_undo]
+    return [btn_select, btn_add_text, btn_add_image, btn_add_rect, btn_add_obscure, btn_smart_generate, btn_undo]
 
 def update_toolbar_highlight(toolbar_buttons, tool_mode, insert_mode):
     """Update the highlighting of toolbar buttons based on active tool"""
-    if len(toolbar_buttons) == 4:
-        btn_select, btn_add_text, btn_add_image, btn_add_rect = toolbar_buttons
-    else:
-        btn_select, btn_add_text, btn_add_image = toolbar_buttons[:3]
-        btn_add_rect = None
+    btn_select, btn_add_text, btn_add_image, btn_add_rect, btn_add_obscure, btn_smart_generate = toolbar_buttons[:6]
     
     active_color = pygame.Color(pygame.Color("#4B5563"))
     default_color = pygame.Color(pygame.Color("#1F2937"))
-    
-    if btn_select: btn_select.colours['normal_bg'] = active_color if tool_mode == 'select' and not insert_mode else default_color
-    if btn_add_text: btn_add_text.colours['normal_bg'] = active_color if insert_mode == 'text' else default_color
-    if btn_add_image: btn_add_image.colours['normal_bg'] = active_color if insert_mode in ('image', 'image_select') else default_color
-    if btn_add_rect: btn_add_rect.colours['normal_bg'] = active_color if insert_mode == 'rectangle' else default_color
-    
-    if btn_select: btn_select.rebuild()
-    if btn_add_text: btn_add_text.rebuild()
-    if btn_add_image: btn_add_image.rebuild()
-    if btn_add_rect: btn_add_rect.rebuild()
+
+    if btn_select:
+        btn_select.colours['normal_bg'] = active_color if tool_mode == 'select' and not insert_mode else default_color
+    if btn_add_text:
+        btn_add_text.colours['normal_bg'] = active_color if insert_mode == 'text' else default_color
+    if btn_add_image:
+        btn_add_image.colours['normal_bg'] = active_color if insert_mode in ('image', 'image_select') else default_color
+    if btn_add_rect:
+        btn_add_rect.colours['normal_bg'] = active_color if insert_mode == 'rectangle' else default_color
+    if btn_add_obscure:
+        btn_add_obscure.colours['normal_bg'] = active_color if insert_mode == 'obscure' else default_color
+    if btn_smart_generate:
+        btn_smart_generate.colours['normal_bg'] = active_color if tool_mode == 'smart_generate' else default_color
+
+    if btn_select:
+        btn_select.rebuild()
+    if btn_add_text:
+        btn_add_text.rebuild()
+    if btn_add_image:
+        btn_add_image.rebuild()
+    if btn_add_rect:
+        btn_add_rect.rebuild()
+    if btn_add_obscure:
+        btn_add_obscure.rebuild()
+    if btn_smart_generate:
+        btn_smart_generate.rebuild()
 
 def create_zoom_controls(manager, window_width, window_height):
     """Create zoom control buttons"""
@@ -304,7 +323,8 @@ class ImageFileSelectWindow(UIWindow):
             item_list=[os.path.basename(f) for f in self.image_files],
             manager=manager,
             container=self,
-            object_id='#image_selection_list'
+            object_id='#image_selection_list',
+            default_selection=os.path.basename(self.image_files[0]) if self.image_files else None
         )
 
         # Create preview area for the thumbnail
@@ -342,21 +362,6 @@ class ImageFileSelectWindow(UIWindow):
         # Select first item by default if list is not empty
         if self.image_files:
             first_item_display_name = os.path.basename(self.image_files[0])
-            # Try using set_single_selection if available, or select_item if that's the method
-            # Assuming first_item_display_name is the string to select.
-            try:
-                self.selection_list.set_single_selection(first_item_display_name)
-            except AttributeError:
-                # Fallback or further investigation needed if set_single_selection doesn't exist
-                # For now, we'll let it pass and the list might not have a default selection
-                # or we might need to find the correct method.
-                # A common alternative is to find the item in the list and pass the item object.
-                print("UISelectionList might not have set_single_selection, checking alternative...")
-                # Alternative: Manually find and set (less ideal if a direct method exists)
-                # This part would need more specific API knowledge if set_single_selection fails.
-                # For now, the goal is to fix the immediate AttributeError.
-                # If this also fails, the user will see the print and we can investigate further.
-                pass 
             self.update_preview(first_item_display_name) # This should still be called
         else:
             self.update_preview(None)
@@ -420,4 +425,60 @@ class ImageFileSelectWindow(UIWindow):
         else:
             self.preview_image_widget.image.fill((50, 50, 50, 0)) # Placeholder
             self.preview_label.set_text("No Image Selected")
-            self.selected_image_path = None 
+            self.selected_image_path = None
+
+def create_node_list_panel(manager, window_width, window_height, elements, selected_idx):
+    """
+    Create or update a docked panel on the right with a scrollable list of nodes.
+    Returns the panel and the selection list.
+    """
+    panel_width = 220
+    panel_height = window_height - 100
+    panel_x = window_width - panel_width
+    panel_y = 0
+    panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
+
+    panel = pygame_gui.elements.UIPanel(
+        relative_rect=panel_rect,
+        manager=manager,
+        object_id='#node_list_panel'
+    )
+
+    # Prepare list items
+    list_items = []
+    for idx, el in enumerate(elements):
+        el_type = el.get('type', 'unknown')
+        if el_type == 'text':
+            preview = el.get('value', '')
+            preview = preview[:20] + ('...' if len(preview) > 20 else '')
+            label = f"{idx+1}. [Text] {preview}"
+        elif el_type == 'image':
+            label = f"{idx+1}. [Image] {el.get('value', '')}"
+        elif el_type == 'rectangle':
+            label = f"{idx+1}. [Rectangle]"
+        elif el_type == 'obscure':
+            label = f"{idx+1}. [Obscure]"
+        else:
+            label = f"{idx+1}. [{el_type.capitalize()}]"
+        list_items.append(label)
+
+    selection_list = pygame_gui.elements.UISelectionList(
+        relative_rect=pygame.Rect(10, 10, panel_width-20, panel_height-20),
+        item_list=list_items,
+        manager=manager,
+        container=panel,
+        allow_multi_select=False
+    )
+    # Set selection if any
+    if selected_idx is not None and 0 <= selected_idx < len(list_items):
+        # Deselect all items first
+        for item in selection_list.item_list:
+            item['selected'] = False
+            if item['button_element'] is not None:
+                item['button_element'].unselect()
+        # Select the desired item
+        selection_list.item_list[selected_idx]['selected'] = True
+        if selection_list.item_list[selected_idx]['button_element'] is not None:
+            selection_list.item_list[selected_idx]['button_element'].select()
+
+    return panel, selection_list

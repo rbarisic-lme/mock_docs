@@ -23,7 +23,8 @@ ICON_MERGE_PATH = os.path.join(_ASSETS_DIR, 'icon_merge.png')
 
 # Display settings
 PADDING = 80  # workspace padding around the document (display units)
-SCALE = 2     # 2x resolution for all images and coordinates
+SCALE = 2     # Legacy 2x resolution value (kept for backward compatibility)
+TARGET_HEIGHT = 2000  # Target height in pixels for document renderings
 ZOOM_LEVELS = [0.25, 0.33, 0.5, 0.66, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0]
 DEFAULT_ZOOM_INDEX = 7  # 1.0
 HANDLE_SIZE = 10
@@ -50,7 +51,7 @@ HELP_TEXT = [
 ]
 
 # Other constants
-DOUBLE_CLICK_THRESHOLD = 0.4  # seconds
+DOUBLE_CLICK_THRESHOLD = 0.4  # seconds 
 
 # Template Keys
 CUSTOM_TEXT_KEY_DISPLAY = "<Custom Text>"
@@ -76,7 +77,7 @@ def flatten_json_keys(data, prefix=''):
         # e.g., by index or by assuming it's a list of values rather than keys.
         # For now, if a list contains dicts, we process them.
         # If it's a list of simple values, they won't become keys themselves unless they are dicts.
-        for i, item in enumerate(data):
+        for item in data:  # Simplified loop without enumerate
             # Construct a key like list_key.0, list_key.1 if needed, or just process if item is a dict
             # For the current structure, it seems lists primarily hold objects, so direct recursion is fine.
             if isinstance(item, (dict, list)):

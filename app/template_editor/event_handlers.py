@@ -1,16 +1,16 @@
 import pygame
 import pygame_gui
-from pygame_gui.windows import UIFileDialog
 from pygame_gui.elements import UITextEntryLine
 import os
 import pygame.surfarray
 import numpy as np
 import copy
+import time
 
 from app.template_editor.constants import SCALE, ZOOM_LEVELS, DEFAULT_ZOOM_INDEX, HANDLE_SIZE, INPUT_IMG_DIR
 from app.template_editor.elements import get_element_bounds, get_resize_handles
 from app.template_editor.canvas import get_canvas_coords
-from app.template_editor.ui_text_properties import hide_font_menu, show_font_menu, handle_font_menu_event
+from app.template_editor.ui_text_properties import hide_font_menu, show_font_menu, handle_font_menu_event, is_editing_custom_key_input
 from app.template_editor.ui_image_properties import show_image_properties_panel, hide_image_properties_panel, handle_image_properties_event
 from app.template_editor.ui_components import ImageFileSelectWindow
 from app.template_editor import ui_text_properties # Ensure this import is present or adjust as needed
@@ -19,6 +19,9 @@ from app.template_editor import ocr_utils
 
 def handle_keyboard_event(event, state, manager: pygame_gui.UIManager):
     """Handle keyboard events"""
+    # Block all input if editing the custom key input in the text properties panel
+    if is_editing_custom_key_input:
+        return False
     if event.type == pygame.KEYDOWN:
         # Undo (Ctrl+Z)
         if event.key == pygame.K_z and (pygame.key.get_mods() & pygame.KMOD_CTRL):
@@ -41,18 +44,116 @@ def handle_keyboard_event(event, state, manager: pygame_gui.UIManager):
                 state['ui_needs_update'] = True
                 print(f"[DEBUG] Ctrl+A pressed. Selected indices: {state['selected_indices']}")
                 return True
+        # Copy (Ctrl+C)
+        elif event.key == pygame.K_c and (pygame.key.get_mods() & pygame.KMOD_CTRL):
+            if not state['text_edit_mode'] and state.get('selected_indices'):
+                # Store copies of the selected elements
+                selected_indices = state.get('selected_indices', [])
+                if selected_indices:
+                    page_elements = state['config']['pages'][state['page_num']].get('elements', [])
+                    state['copied_elements'] = [page_elements[idx].copy() for idx in selected_indices]
+                    state['copy_source_indices'] = selected_indices.copy()
+                    print(f"[DEBUG] Copied {len(state['copied_elements'])} elements")
+                return True
+        # Paste (Ctrl+V)
+        elif event.key == pygame.K_v and (pygame.key.get_mods() & pygame.KMOD_CTRL):
+            if not state['text_edit_mode'] and state.get('copied_elements'):
+                # Insert copied elements below the originals
+                page_elements = state['config']['pages'][state['page_num']].get('elements', [])
 
+                # Figure out the vertical offset for pasting
+                # Use the first copied element as reference for the offset
+                if state['copied_elements']:
+                    # Default vertical offset - can be adjusted based on preference
+                    vertical_offset = 20
+
+                    # If we have the source indices, try to calculate a smarter offset
+                    if state.get('copy_source_indices') and state['copy_source_indices']:
+                        try:
+                            # Get the first element in the selection for reference
+                            ref_idx = state['copy_source_indices'][0]
+                            if ref_idx < len(page_elements):
+                                original = page_elements[ref_idx]
+                                # Use the element's height as the offset
+                                if 'height' in original:
+                                    vertical_offset = original['height'] + 5  # +5 for slight spacing
+                        except (IndexError, KeyError) as e:
+                            print(f"[DEBUG] Error calculating paste offset: {e}")
+                            # Fall back to default offset
+
+                    # Create new copies to avoid modifying the stored ones
+                    new_elements = []
+                    for element in state['copied_elements']:
+                        # Create a deep copy
+                        new_element = element.copy()
+                        # Apply vertical offset
+                        new_element['y'] = new_element.get('y', 0) + vertical_offset
+                        new_elements.append(new_element)
+
+                    # Determine the insertion point - if we have the source, insert after the last one
+                    insertion_idx = len(page_elements)
+                    if state.get('copy_source_indices') and state['copy_source_indices']:
+                        # Insert after the last selected element
+                        insertion_idx = max(state['copy_source_indices']) + 1
+
+                    # Insert the new elements
+                    for i, element in enumerate(new_elements):
+                        page_elements.insert(insertion_idx + i, element)
+
+                    # Update selection to the newly pasted elements
+                    state['selected_indices'] = list(range(insertion_idx, insertion_idx + len(new_elements)))
+                    if state['selected_indices']:
+                        state['selected_idx'] = state['selected_indices'][0]
+
+                    # Push to history stack
+                    push_history(state)
+
+                    print(f"[DEBUG] Pasted {len(new_elements)} elements at index {insertion_idx}")
+                return True
+        # Save (Ctrl+S / Strg+S)
+        elif event.key == pygame.K_s and (pygame.key.get_mods() & pygame.KMOD_CTRL):
+            if not state['text_edit_mode']:
+                from app.template_editor.pdf_utils import save_config
+                save_config(state['pdf_filename'], state['config'])
+                print('[INFO] Config saved via Ctrl+S')
+                return True
         # Check if a pygame_gui text input element has focus
         focused_element = manager.get_focus_set()
         if focused_element is not None and isinstance(focused_element, UITextEntryLine):
             print(f"DEBUG: UITextEntryLine focused: {focused_element.object_ids if hasattr(focused_element, 'object_ids') else 'No ID'}. Key: {pygame.key.name(event.key)}")
-            # If a UITextEntryLine is focused, pygame_gui is handling text input.
-            # We should not process our application-level keyboard shortcuts for general key presses.
-            # However, pygame_gui itself might not consume ALL keys (e.g. Escape for closing a window
-            # might still need to be handled by the UIManager or specific window logic if not by default text input).
-            # For general character input, this should be sufficient.
-            # The manager.process_events(event) call in app.py handles passing the event to the focused widget.
-            return True # Indicate event is handled by the focused UI text input element.
+            return True # Only block if a text entry is focused
+
+        # Allow arrow key movement even if other UI panels are open
+        # Move selected node(s) with arrow keys
+        if not state['text_edit_mode'] and not state['insert_mode'] and state['tool_mode'] == 'select' and state.get('selected_indices'):
+            moved = False
+            dx, dy = 0, 0
+            step = 10 if (pygame.key.get_mods() & pygame.KMOD_SHIFT) else 1
+            if event.key == pygame.K_LEFT:
+                dx = -step
+            elif event.key == pygame.K_RIGHT:
+                dx = step
+            elif event.key == pygame.K_UP:
+                dy = -step
+            elif event.key == pygame.K_DOWN:
+                dy = step
+            if dx != 0 or dy != 0:
+                page_elements = state['config']['pages'][state['page_num']]['elements']
+                for idx in state['selected_indices']:
+                    if 0 <= idx < len(page_elements):
+                        page_elements[idx]['x'] = page_elements[idx].get('x', 0) + dx
+                        page_elements[idx]['y'] = page_elements[idx].get('y', 0) + dy
+                        moved = True
+                if moved:
+                    push_history(state)
+                    state['ui_needs_update'] = True
+                    state['redraw'] = True
+                    return True
+
+        # Arrow key repeat logic
+        if event.key in (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_UP, pygame.K_DOWN):
+            state['arrow_key_held'] = event.key
+            state['arrow_key_last_time'] = time.time()
 
         # If no UI text input is active, proceed with existing application-level keyboard handling.
         if event.key == pygame.K_ESCAPE:
@@ -148,7 +249,7 @@ def handle_keyboard_event(event, state, manager: pygame_gui.UIManager):
                     push_history(state)
                     state['ui_needs_update'] = True
                     return True
-    
+
     return False
 
 def handle_mousewheel_event(event, state):
@@ -168,10 +269,12 @@ def handle_mousebuttondown(event, state, window, manager: pygame_gui.UIManager):
     """Handle mouse button down events"""
     if event.type != pygame.MOUSEBUTTONDOWN:
         return False
-    
+
     # Check if a pygame_gui UI element is currently under the mouse cursor.
     if manager.get_hovering_any_element():
-        return True
+        # If a UI element (button, dropdown, etc.) is clicked, let pygame_gui handle it.
+        # We don't want canvas interactions in this case.
+        return True # Event handled by pygame_gui
 
     mx, my = event.pos
     canvas_w, canvas_h = state['canvas_size']
@@ -182,415 +285,407 @@ def handle_mousebuttondown(event, state, window, manager: pygame_gui.UIManager):
     cx, cy = get_canvas_coords(mx, my, canvas_x, canvas_y, state['zoom'])
     handled = False
 
-    # --- Marquee or single select logic ---
-    if event.button == 1 and state['tool_mode'] == 'select' and not state['insert_mode'] and not state['text_edit_mode']:
-        # Check if click is on any element or handle
-        hit_idx = None
-        for idx, el in enumerate(state['config']['pages'][state['page_num']]['elements']):
-            x_el, y_el, w_el, h_el, _, _ = get_element_bounds(el, SCALE/state['zoom'])
-            if x_el <= cx <= x_el + w_el and y_el <= cy <= y_el + h_el:
-                hit_idx = idx
-                break
-        if hit_idx is not None:
-            # Single select
-            state['selected_indices'] = [hit_idx]
-            state['selected_idx'] = hit_idx
-            print(f"[DEBUG] selected_indices updated: {state['selected_indices']}")
-            state['ui_needs_update'] = True
-        else:
-            # Not on any element, start marquee
-            state['marquee_selecting'] = True
-            state['marquee_start'] = (cx, cy)
-            state['marquee_end'] = (cx, cy)
-            state['selected_indices'] = []
-            state['selected_idx'] = None
-            handled = True
-
-    # --- Show text node properties window if single text node is selected ---
-    if state['tool_mode'] == 'select' and not state['insert_mode'] and not state['text_edit_mode']:
-        selected_indices = state.get('selected_indices', [])
-        if len(selected_indices) == 1:
-            idx = selected_indices[0]
-            el = state['config']['pages'][state['page_num']]['elements'][idx]
-            if el.get('type') == 'text':
-                # Show font menu for this text node
-                bounds_x, bounds_y, bounds_w, bounds_h, _, _ = get_element_bounds(el, SCALE/state['zoom'])
-                element_screen_x = canvas_x + bounds_x * state['zoom']
-                element_screen_y = canvas_y + bounds_y * state['zoom']
-                element_rect = pygame.Rect(element_screen_x, element_screen_y, bounds_w * state['zoom'], bounds_h * state['zoom'])
-                show_font_menu(el, element_rect, manager)
-            else:
-                hide_font_menu()
-        else:
-            hide_font_menu()
-    # --- End show text node properties window ---
+    current_page_elements = state['config']['pages'][state['page_num']].get('elements', [])
 
     if event.button == 1:  # Left mouse button
-        if state['insert_mode'] == 'text':
+        if state['tool_mode'] == 'select' and not state['insert_mode'] and not state['text_edit_mode']:
+            clicked_on_handle = False
+            handle_hit_idx = None
+            resize_initiated = False
+
+            # 1. Check for resize handle clicks FIRST
+            for el_idx, el_iter in enumerate(current_page_elements):
+                handles = get_resize_handles(el_iter, SCALE / state['zoom'])
+                for h_idx, (hx, hy) in enumerate(handles):
+                    if abs(cx - hx) <= HANDLE_SIZE / state['zoom'] and abs(cy - hy) <= HANDLE_SIZE / state['zoom']:
+                        handle_hit_idx = el_idx
+                        if h_idx == 4 and el_iter.get('type') == 'text':  # NE handle for font size
+                            state['font_resizing_mode'] = (el_idx, h_idx)
+                            state['font_resizing'] = True
+                            state['orig_font_size'] = el_iter.get('font_size', 18)
+                            state['font_resize_start_mouse'] = (cx, cy)
+                        else:  # N,S,E,W resize handles
+                            state['resize_mode'] = (el_idx, h_idx)
+                            state['resizing'] = True
+                            state['orig_rect'] = (el_iter['x'], el_iter['y'], el_iter.get('width', 100), el_iter.get('height', 30))
+                            state['resize_start_mouse'] = (cx, cy)
+                            if el_iter.get('type') == 'text':
+                                try:
+                                    orig_font = pygame.font.SysFont(el_iter.get('font', 'arial'), el_iter.get('font_size', 18))
+                                except pygame.error:
+                                    orig_font = pygame.font.Font(None, el_iter.get('font_size', 18))
+                                state['orig_text_content_dims'] = (orig_font.render(el_iter.get('value', ''), True, (0,0,0)).get_size())
+
+
+                        # Set common states for any resize initiation
+                        state['selected_idx'] = el_idx
+                        state['selected_indices'] = [el_idx]
+                        state['dragging'] = False
+                        state['marquee_selecting'] = False
+                        # Ensure the other resize type is false
+                        if state.get('font_resizing'): state['resizing'] = False
+                        if state.get('resizing'): state['font_resizing'] = False
+                        
+                        clicked_on_handle = True
+                        resize_initiated = True
+                        break
+                if clicked_on_handle:
+                    break
+            
+            if resize_initiated: # A resize handle was clicked and resize state set
+                # Show/hide property panels based on the element type whose handle was clicked
+                element_being_resized = current_page_elements[handle_hit_idx]
+                el_type = element_being_resized.get('type')
+                state['editing_idx'] = handle_hit_idx # Keep editing_idx in sync for props
+
+                bounds_x, bounds_y, bounds_w, bounds_h, _, _ = get_element_bounds(element_being_resized, SCALE/state['zoom'])
+                element_screen_x = canvas_x + bounds_x * state['zoom']
+                element_screen_y = canvas_y + bounds_y * state['zoom']
+                element_rect_display = pygame.Rect(element_screen_x, element_screen_y, bounds_w * state['zoom'], bounds_h * state['zoom'])
+
+                if el_type == 'text':
+                    show_font_menu(element_being_resized, element_rect_display, manager)
+                    hide_image_properties_panel()
+                    hide_obscure_properties_panel()
+                elif el_type == 'image':
+                    show_image_properties_panel(manager, element_being_resized, element_rect_display)
+                    hide_font_menu()
+                    hide_obscure_properties_panel()
+                elif el_type == 'obscure':
+                    show_obscure_properties_panel(manager, element_being_resized, element_rect_display)
+                    hide_font_menu()
+                    hide_image_properties_panel()
+                else:
+                    hide_font_menu()
+                    hide_image_properties_panel()
+                    hide_obscure_properties_panel()
+                handled = True
+            else:
+                # 2. If NO handle was clicked, check if an element body was clicked
+
+                clicked_elements_indices = []
+                for el_idx, el_iter in enumerate(current_page_elements):
+                    x_el, y_el, w_el, h_el, _, _ = get_element_bounds(el_iter, SCALE / state['zoom'])
+                    if x_el <= cx <= x_el + w_el and y_el <= cy <= y_el + h_el:
+                        clicked_elements_indices.append(el_idx) # Collect all elements under click
+                
+                body_hit_idx = None
+                if clicked_elements_indices:
+                    # Sort by Z-order (assuming higher index in current_page_elements is drawn on top)
+                    # If you have a proper Z-order, sort by that. For now, reverse order = top first.
+                    clicked_elements_indices.reverse() # Topmost is now at index 0
+
+                    if state['selected_idx'] in clicked_elements_indices and len(clicked_elements_indices) > 1:
+                        # Current selection is under the mouse, try to cycle
+                        try:
+                            current_selected_in_clicked_list_idx = clicked_elements_indices.index(state['selected_idx'])
+                            body_hit_idx = clicked_elements_indices[(current_selected_in_clicked_list_idx + 1) % len(clicked_elements_indices)]
+                        except ValueError: # Should not happen if selected_idx is in the list
+                            body_hit_idx = clicked_elements_indices[0]
+                    else:
+                        # Select the new topmost element
+                        body_hit_idx = clicked_elements_indices[0]
+                
+                if body_hit_idx is not None: # Clicked on an element body
+                    element_clicked = current_page_elements[body_hit_idx]
+                    
+                    # Set states for dragging
+                    state['dragging'] = True
+                    state['selected_idx'] = body_hit_idx
+                    state['selected_indices'] = [body_hit_idx] # Multi-select drag not implemented here, just single
+                    state['drag_start_mouse_canvas'] = (cx, cy)
+                    state['drag_start_el_x'] = element_clicked['x']
+                    state['drag_start_el_y'] = element_clicked['y']
+
+                    state['resizing'] = False
+                    state['font_resizing'] = False
+                    state['marquee_selecting'] = False
+                    state['editing_idx'] = body_hit_idx # For property panels
+
+                    # Show/hide property panels
+                    el_type = element_clicked.get('type')
+                    bounds_x, bounds_y, bounds_w, bounds_h, _, _ = get_element_bounds(element_clicked, SCALE/state['zoom'])
+                    element_screen_x = canvas_x + bounds_x * state['zoom']
+                    element_screen_y = canvas_y + bounds_y * state['zoom']
+                    element_rect_display = pygame.Rect(element_screen_x, element_screen_y, bounds_w * state['zoom'], bounds_h * state['zoom'])
+
+                    if el_type == 'text':
+                        show_font_menu(element_clicked, element_rect_display, manager)
+                        hide_image_properties_panel()
+                        hide_obscure_properties_panel()
+                    elif el_type == 'image':
+                        show_image_properties_panel(manager, element_clicked, element_rect_display)
+                        hide_font_menu()
+                        hide_obscure_properties_panel()
+                    elif el_type == 'obscure':
+                        show_obscure_properties_panel(manager, element_clicked, element_rect_display)
+                        hide_font_menu()
+                        hide_image_properties_panel()
+                    else:
+                        hide_font_menu()
+                        hide_image_properties_panel()
+                        hide_obscure_properties_panel()
+                    
+                    # Double-click for text editing
+                    current_time = pygame.time.get_ticks() / 1000.0
+                    if el_type == 'text' and \
+                       state.get('last_click_idx_for_double_click') == body_hit_idx and \
+                       (current_time - state.get('last_click_time_for_double_click', 0)) < 0.3: # 300ms threshold
+                        state['text_edit_mode'] = True
+                        state['editing_idx'] = body_hit_idx
+                        state['editing_text'] = element_clicked.get('value', '')
+                        state['text_cursor_pos'] = len(state['editing_text'])
+                        pygame.mouse.set_visible(False) # Hide system cursor for text editing
+                        # Font menu is already shown
+                        state['dragging'] = False # Cancel drag if it's a double click into text edit
+                    
+                    state['last_click_idx_for_double_click'] = body_hit_idx
+                    state['last_click_time_for_double_click'] = current_time
+                    handled = True
+                else:
+                    # 3. If NO handle and NO element body was clicked, start marquee selection
+                    state['marquee_selecting'] = True
+                    state['marquee_start'] = (cx, cy)
+                    state['marquee_end'] = (cx, cy)
+                    state['selected_indices'] = [] # Clear previous selection
+                    state['selected_idx'] = None
+                    state['editing_idx'] = None # Clear property editing
+
+                    state['dragging'] = False
+                    state['resizing'] = False
+                    state['font_resizing'] = False
+                    
+                    hide_font_menu()
+                    hide_image_properties_panel()
+                    hide_obscure_properties_panel()
+                    handled = True
+            
+            if handled: # Any select mode interaction
+                state['ui_needs_update'] = True
+            # return handled # This was returning too early, other modes need to be checked.
+
+        # --- Insert Modes (Text, Image, Rectangle, Obscure) ---
+        elif state['insert_mode'] == 'text':
+            # ... (existing text insert logic from lines 321-345)
             new_el = {
-                'type': 'text',
-                'x': cx,
-                'y': cy,
-                'width': 150,  # Default bounding box width
-                'height': 50, # Default bounding box height
-                'font_size': 18,
-                'value': 'Sample Text',
-                # 'padding': {'left': 8, 'top': 8, 'right': 8, 'bottom': 8}, # REMOVE PADDING
-                'background_color': [255, 255, 255], # Default white background for the box
-                'font_color': [0,0,0],
-                'text_align_h': 'left', # Default horizontal alignment
-                'text_align_v': 'top'   # Default vertical alignment
+                'type': 'text', 'x': cx, 'y': cy, 'width': 150, 'height': 50,
+                'font_size': 18, 'value': 'Sample Text', 
+                'background_color': [255, 255, 255], 'font_color': [0,0,0],
+                'text_align_h': 'left', 'text_align_v': 'top'
             }
-            state['config']['pages'][state['page_num']]['elements'].append(new_el)
-            new_idx = len(state['config']['pages'][state['page_num']]['elements']) - 1
-            
-            state['selected_idx'] = new_idx      # Select the new element
-            state['tool_mode'] = 'select'        # Switch to select mode
-            state['insert_mode'] = None          # Exit insert mode
-            pygame.mouse.set_visible(True)     # Show mouse cursor
-            
-            # Ensure text editing mode is fully reset and font menu is hidden
-            reset_text_edit_mode(state)
-            
+            current_page_elements.append(new_el)
+            new_idx = len(current_page_elements) - 1
+            state['selected_idx'] = new_idx
+            state['selected_indices'] = [new_idx]
+            state['tool_mode'] = 'select'
+            state['insert_mode'] = None
+            pygame.mouse.set_visible(True)
+            reset_text_edit_mode(state) # Includes hiding panels
             push_history(state)
             state['ui_needs_update'] = True
-            return True
-
+            handled = True # ছিল না
         elif state['insert_mode'] == 'image' and state['insert_image_path']:
-            actual_w, actual_h = 200, 200 # Default/fallback
-            relative_image_path = state['insert_image_path'] # Assume it might not be made relative yet
-
+            # ... (existing image insert logic from lines 347-392)
+            actual_w, actual_h = 200, 200 
+            relative_image_path = state['insert_image_path']
             try:
-                # state['insert_image_path'] should be the full path at this stage
                 img_to_place = pygame.image.load(state['insert_image_path'])
                 actual_w, actual_h = img_to_place.get_size()
-                # Convert the full path to relative for storing in config
                 relative_image_path = os.path.relpath(state['insert_image_path'], INPUT_IMG_DIR)
-            except pygame.error as e:
-                print(f"Error loading image {state['insert_image_path']} for dimensions: {e}. Using default size and potentially incorrect path.")
-            except ValueError as e: # Catches relpath errors if paths are not on the same drive (Windows)
-                print(f"Error creating relative path for {state['insert_image_path']} against {INPUT_IMG_DIR}: {e}. Storing original path.")
-                # In this case, relative_image_path remains state['insert_image_path'] (the full one)
-                # This might need further handling depending on how paths are resolved later.
+            except pygame.error as e: print(f"Error loading image {state['insert_image_path']} for dimensions: {e}.")
+            except ValueError as e: print(f"Error creating relative path for {state['insert_image_path']}: {e}.")
 
             new_el = {
-                'type': 'image',
-                'x': cx,
-                'y': cy,
-                'width': actual_w, # Use actual dimensions
-                'height': actual_h, # Use actual dimensions
-                'value': relative_image_path, # Store relative path
+                'type': 'image', 'x': cx, 'y': cy, 'width': actual_w, 'height': actual_h,
+                'value': relative_image_path, 
                 'padding': {'left': 0, 'top': 0, 'right': 0, 'bottom': 0}
             }
-            state['config']['pages'][state['page_num']]['elements'].append(new_el)
-            new_idx = len(state['config']['pages'][state['page_num']]['elements']) - 1
-
-            state['selected_idx'] = new_idx      # Select the new image
-            state['tool_mode'] = 'select'        # Switch to select mode
-            state['insert_mode'] = None          # Exit insert mode
-            state['insert_image_path'] = None  # Clear image path
-            pygame.mouse.set_visible(True)     # Show mouse cursor
-            hide_font_menu()                   # Ensure font menu is hidden
-            
-            # Show image properties for the newly added and selected image
-            selected_el_for_props = state['config']['pages'][state['page_num']]['elements'][new_idx]
-            el_x_bounds, el_y_bounds, el_w_bounds, el_h_bounds, _, _ = get_element_bounds(selected_el_for_props, SCALE/state['zoom'])
+            current_page_elements.append(new_el)
+            new_idx = len(current_page_elements) - 1
+            state['selected_idx'] = new_idx
+            state['selected_indices'] = [new_idx]
+            state['tool_mode'] = 'select'
+            state['insert_mode'] = None
+            state['insert_image_path'] = None
+            pygame.mouse.set_visible(True)
+            hide_font_menu()
+            # Show image properties for new image
+            el_x_bounds, el_y_bounds, el_w_bounds, el_h_bounds, _, _ = get_element_bounds(new_el, SCALE/state['zoom'])
             element_screen_x = canvas_x + el_x_bounds * state['zoom']
             element_screen_y = canvas_y + el_y_bounds * state['zoom']
             element_rect_display = pygame.Rect(element_screen_x, element_screen_y, el_w_bounds * state['zoom'], el_h_bounds * state['zoom'])
-            show_image_properties_panel(manager, selected_el_for_props, element_rect_display)
-            state['editing_idx'] = new_idx # Set editing_idx for property panel to use
-
+            show_image_properties_panel(manager, new_el, element_rect_display)
+            state['editing_idx'] = new_idx
             push_history(state)
             state['ui_needs_update'] = True
-            return True
-
+            handled = True # ছিল না
         elif state['insert_mode'] == 'rectangle':
+            # ... (existing rectangle insert logic from lines 394-410)
             new_el = {
-                'type': 'rectangle',
-                'x': cx,
-                'y': cy,
-                'width': 100, # Default width
-                'height': 50, # Default height
-                'background_color': [200, 200, 200] # Default light gray
+                'type': 'rectangle', 'x': cx, 'y': cy, 'width': 100, 'height': 50,
+                'background_color': [200, 200, 200]
             }
-            state['config']['pages'][state['page_num']]['elements'].append(new_el)
-            state['selected_idx'] = len(state['config']['pages'][state['page_num']]['elements']) - 1 # Select new rect
-            state['insert_mode'] = None
-            state['tool_mode'] = 'select' # Switch to select mode
-            pygame.mouse.set_visible(True)
-            hide_font_menu()
-            hide_image_properties_panel() # Hide panels if a rect is added
-            push_history(state)
-            state['ui_needs_update'] = True
-            return True
-
-        elif state['insert_mode'] == 'obscure':
-            new_el = {
-                'type': 'obscure',
-                'x': cx,
-                'y': cy,
-                'width': 100,
-                'height': 50,
-                'mode': 'pixelate'  # default mode
-            }
-            state['config']['pages'][state['page_num']]['elements'].append(new_el)
-            new_idx = len(state['config']['pages'][state['page_num']]['elements']) - 1
+            current_page_elements.append(new_el)
+            new_idx = len(current_page_elements) - 1
             state['selected_idx'] = new_idx
+            state['selected_indices'] = [new_idx]
             state['insert_mode'] = None
             state['tool_mode'] = 'select'
             pygame.mouse.set_visible(True)
             hide_font_menu()
             hide_image_properties_panel()
-            # Show obscure properties panel
-            selected_el_for_props = state['config']['pages'][state['page_num']]['elements'][new_idx]
-            el_x_bounds, el_y_bounds, el_w_bounds, el_h_bounds, _, _ = get_element_bounds(selected_el_for_props, SCALE/state['zoom'])
+            hide_obscure_properties_panel() # Also hide obscure
+            push_history(state)
+            state['ui_needs_update'] = True
+            handled = True # ছিল না
+        elif state['insert_mode'] == 'obscure':
+            # ... (existing obscure insert logic from lines 412-435)
+            new_el = {
+                'type': 'obscure', 'x': cx, 'y': cy, 'width': 100, 'height': 50,
+                'mode': 'pixelate'
+            }
+            current_page_elements.append(new_el)
+            new_idx = len(current_page_elements) - 1
+            state['selected_idx'] = new_idx
+            state['selected_indices'] = [new_idx]
+            state['insert_mode'] = None
+            state['tool_mode'] = 'select'
+            pygame.mouse.set_visible(True)
+             # Show obscure properties panel
+            el_x_bounds, el_y_bounds, el_w_bounds, el_h_bounds, _, _ = get_element_bounds(new_el, SCALE/state['zoom'])
             element_screen_x = canvas_x + el_x_bounds * state['zoom']
             element_screen_y = canvas_y + el_y_bounds * state['zoom']
             element_rect_display = pygame.Rect(element_screen_x, element_screen_y, el_w_bounds * state['zoom'], el_h_bounds * state['zoom'])
-            show_obscure_properties_panel(manager, selected_el_for_props, element_rect_display)
-            state['editing_idx'] = new_idx # Ensure editing_idx is set for obscure
+            show_obscure_properties_panel(manager, new_el, element_rect_display)
+            state['editing_idx'] = new_idx
             hide_font_menu()
             hide_image_properties_panel()
             push_history(state)
             state['ui_needs_update'] = True
-            return True
+            handled = True # ছিল না
+        
+        # --- Smart Generate tool logic: start marquee for smart generation ---
+        # This was originally mixed with select mode, moving it to be an explicit tool mode check
+        elif state['tool_mode'] == 'smart_generate' and not state.get('smart_generate_active', False):
+             # Start the marquee selection for smart generate
+            state['marquee_selecting'] = True
+            state['marquee_start'] = (cx, cy)
+            state['marquee_end'] = (cx, cy)
+            state['smart_generate_active'] = True # Mark that smart generate marquee has started
+            # Clear other potentially conflicting states
+            state['selected_indices'] = []
+            state['selected_idx'] = None
+            state['dragging'] = False
+            state['resizing'] = False
+            state['font_resizing'] = False
+            hide_font_menu()
+            hide_image_properties_panel()
+            hide_obscure_properties_panel()
+            handled = True
 
-        elif state['tool_mode'] == 'select' and not state['insert_mode'] and not state['text_edit_mode']:
-            clicked_on_something = False # General flag if any interaction happened
-            # Check for resize handle clicks FIRST
-            for idx, el in enumerate(state['config']['pages'][state['page_num']]['elements']):
-                handles = get_resize_handles(el, SCALE/state['zoom'])
-                for hidx, (hx, hy) in enumerate(handles):
-                    if abs(cx - hx) <= HANDLE_SIZE / state['zoom'] and abs(cy - hy) <= HANDLE_SIZE / state['zoom']:
-                        if hidx == 4 and el.get('type') == 'text': # NE handle (index 4) for font size, only for text
-                            state['font_resizing_mode'] = (idx, hidx)
-                            state['selected_idx'] = idx
-                            state['font_resizing'] = True
-                            state['font_resize_start_mouse'] = (cx, cy)
-                            state['orig_font_size'] = el.get('font_size', 18)
-                        elif hidx != 4: # Existing N,S,E,W resize handles (not font size handle)
-                            state['resize_mode'] = (idx, hidx)
-                            state['selected_idx'] = idx
-                            state['resizing'] = True
-                            state['resize_start_mouse'] = (cx, cy)
-                            state['orig_rect'] = (el['x'], el['y'], el.get('width',100), el.get('height',30))
-                            if el.get('type') == 'text':
-                                font_name_orig = el.get('font', 'arial')
-                                font_size_orig = el.get('font_size', 18)
-                                text_value_orig = el.get('value', '')
-                                try:
-                                    orig_font = pygame.font.SysFont(font_name_orig, font_size_orig)
-                                except pygame.error:
-                                    orig_font = pygame.font.Font(None, font_size_orig)
-                                orig_text_surf = orig_font.render(text_value_orig, True, (0,0,0))
-                                state['orig_text_content_dims'] = (orig_text_surf.get_width(), orig_text_surf.get_height())
-                        clicked_on_something = True; break
-                if clicked_on_something: break
-            
-            if clicked_on_something: # A handle was clicked
-                handled = True
-                # If a handle of an image was clicked, ensure its properties panel is shown
-                if state['selected_idx'] is not None and state['config']['pages'][state['page_num']]['elements'][state['selected_idx']].get('type') == 'image':
-                    selected_el_for_props = state['config']['pages'][state['page_num']]['elements'][state['selected_idx']]
-                    el_x_bounds, el_y_bounds, el_w_bounds, el_h_bounds, _, _ = get_element_bounds(selected_el_for_props, SCALE/state['zoom'])
-                    element_screen_x = canvas_x + el_x_bounds * state['zoom']
-                    element_screen_y = canvas_y + el_y_bounds * state['zoom']
-                    element_rect_display = pygame.Rect(element_screen_x, element_screen_y, el_w_bounds * state['zoom'], el_h_bounds * state['zoom'])
-                    show_image_properties_panel(manager, selected_el_for_props, element_rect_display)
-                    state['editing_idx'] = state['selected_idx'] # Keep editing_idx in sync for props
-                    hide_font_menu()
-                elif state['selected_idx'] is not None and state['config']['pages'][state['page_num']]['elements'][state['selected_idx']].get('type') == 'obscure':
-                    selected_el_for_props = state['config']['pages'][state['page_num']]['elements'][state['selected_idx']]
-                    el_x_bounds, el_y_bounds, el_w_bounds, el_h_bounds, _, _ = get_element_bounds(selected_el_for_props, SCALE/state['zoom'])
-                    element_screen_x = canvas_x + el_x_bounds * state['zoom']
-                    element_screen_y = canvas_y + el_y_bounds * state['zoom']
-                    element_rect_display = pygame.Rect(element_screen_x, element_screen_y, el_w_bounds * state['zoom'], el_h_bounds * state['zoom'])
-                    show_obscure_properties_panel(manager, selected_el_for_props, element_rect_display)
-                    state['editing_idx'] = state['selected_idx'] # Ensure editing_idx is set for obscure
-                    hide_font_menu()
-                    hide_image_properties_panel()
-                elif state['selected_idx'] is not None and state['config']['pages'][state['page_num']]['elements'][state['selected_idx']].get('type') == 'text':
-                    hide_image_properties_panel() # Hide image panel if a text element's handle is clicked
-                    hide_obscure_properties_panel()
-                else: # Non-image, non-text selected via handle, or no selection change
-                    hide_font_menu()
-                    hide_image_properties_panel()
-                    hide_obscure_properties_panel()
+        # Fallback for general click time tracking if not handled by specific modes above
+        if not handled: # Only update these if no other specific action handled the click
+            state['last_click_time'] = pygame.time.get_ticks() / 1000.0
+            state['last_click_pos'] = (mx, my)
+            # state['last_click_idx_for_double_click'] is handled within select mode logic
 
-            else: # No handle was clicked, proceed with element selection/cycling
-                CLICK_AREA_TOLERANCE = 5 # Pixels for considering clicks in the same area for cycling
-                
-                # Check if this click is a continuation of a cycle
-                is_cycle_continuation = False
-                if state.get('last_selection_cycle_click_pos'):
-                    last_cx, last_cy = state['last_selection_cycle_click_pos']
-                    if abs(cx - last_cx) < CLICK_AREA_TOLERANCE / state['zoom'] and \
-                       abs(cy - last_cy) < CLICK_AREA_TOLERANCE / state['zoom']:
-                        is_cycle_continuation = True
-                
-                if not is_cycle_continuation:
-                    # New click area, reset cycle state
-                    state['overlapping_elements_at_cycle_pos'] = []
-                    state['last_selected_in_cycle_original_idx'] = None
-
-                state['last_selection_cycle_click_pos'] = (cx, cy)
-
-                # Find all elements at the current click position (cx, cy)
-                current_overlapping_elements = []
-                for original_idx, el_data in enumerate(state['config']['pages'][state['page_num']]['elements']):
-                    x_el, y_el, w_el, h_el, _, _ = get_element_bounds(el_data, SCALE/state['zoom'])
-                    if x_el <= cx <= x_el + w_el and y_el <= cy <= y_el + h_el:
-                        current_overlapping_elements.append((el_data, original_idx))
-                
-                current_overlapping_elements.sort(key=get_z_order_key) # Sort them by Z-order
-
-                if not current_overlapping_elements:
-                    state['selected_idx'] = None
-                    state['selected_indices'] = []
-                    hide_font_menu()
-                    hide_image_properties_panel()
-                    hide_obscure_properties_panel()
-                    state['editing_idx'] = None
-                    state['overlapping_elements_at_cycle_pos'] = []
-                    state['last_selected_in_cycle_original_idx'] = None
-                else:
-                    newly_selected_original_idx = -1
-                    last_selected_in_cycle_original_idx = state.get('last_selected_in_cycle_original_idx')
-
-                    if is_cycle_continuation and last_selected_in_cycle_original_idx is not None:
-                        # Find index of last_selected_in_cycle_original_idx in current_overlapping_elements
-                        found_idx_in_current_overlap = -1
-                        for i, (el_data, original_idx) in enumerate(current_overlapping_elements):
-                            if original_idx == last_selected_in_cycle_original_idx:
-                                found_idx_in_current_overlap = i
-                                break
-                        
-                        if found_idx_in_current_overlap != -1:
-                            next_idx_in_current_overlap = (found_idx_in_current_overlap + 1) % len(current_overlapping_elements)
-                            newly_selected_original_idx = current_overlapping_elements[next_idx_in_current_overlap][1]
-                        else:
-                            # Last selected not in current overlap (e.g. mouse moved slightly off it), select topmost
-                            newly_selected_original_idx = current_overlapping_elements[0][1]
-                    else:
-                        # Not a cycle continuation or no previous selection in cycle, select topmost
-                        newly_selected_original_idx = current_overlapping_elements[0][1]
-
-                    state['selected_idx'] = newly_selected_original_idx
-                    state['selected_indices'] = [newly_selected_original_idx] # Single select for now
-                    state['last_selected_in_cycle_original_idx'] = newly_selected_original_idx
-                    state['overlapping_elements_at_cycle_pos'] = [(el[0], el[1]) for el in current_overlapping_elements] # Store tuples
-
-                    newly_selected_el_config = state['config']['pages'][state['page_num']]['elements'][newly_selected_original_idx]
-                    state['editing_idx'] = newly_selected_original_idx # For property panels
-
-                    state['dragging'] = True
-                    state['drag_start_mouse_canvas'] = (cx, cy)
-                    state['drag_start_el_x'] = newly_selected_el_config['x']
-                    state['drag_start_el_y'] = newly_selected_el_config['y']
-
-                    current_time = pygame.time.get_ticks() / 1000
-                    if (newly_selected_el_config['type'] == 'text' and 
-                        state.get('last_click_idx_for_double_click') == newly_selected_original_idx and 
-                        current_time - state.get('last_click_time_for_double_click', 0) < state['double_click_threshold']):
-                        state['text_edit_mode'] = True
-                        state['editing_text'] = newly_selected_el_config['value']
-                        state['text_cursor_pos'] = len(state['editing_text'])
-                        el_bounds_x, el_bounds_y, el_bounds_w, el_bounds_h, _, _ = get_element_bounds(newly_selected_el_config, SCALE/state['zoom'])
-                        element_screen_x = canvas_x + el_bounds_x * state['zoom']
-                        element_screen_y = canvas_y + el_bounds_y * state['zoom']
-                        element_rect_display = pygame.Rect(element_screen_x, element_screen_y, el_bounds_w * state['zoom'], el_bounds_h * state['zoom'])
-                        show_font_menu(newly_selected_el_config, element_rect_display, manager)
-                        hide_image_properties_panel()
-                        hide_obscure_properties_panel()
-                    else:
-                        if newly_selected_el_config.get('type') == 'text':
-                            hide_font_menu() # Initially hide if not double-clicked for edit
-                            hide_image_properties_panel()
-                            hide_obscure_properties_panel()
-                        elif newly_selected_el_config.get('type') == 'image':
-                            el_bounds_x, el_bounds_y, el_bounds_w, el_bounds_h, _, _ = get_element_bounds(newly_selected_el_config, SCALE/state['zoom'])
-                            element_screen_x = canvas_x + el_bounds_x * state['zoom']
-                            element_screen_y = canvas_y + el_bounds_y * state['zoom']
-                            element_rect_display = pygame.Rect(element_screen_x, element_screen_y, el_bounds_w * state['zoom'], el_bounds_h * state['zoom'])
-                            show_image_properties_panel(manager, newly_selected_el_config, element_rect_display)
-                            hide_font_menu()
-                            hide_obscure_properties_panel()
-                        elif newly_selected_el_config.get('type') == 'obscure':
-                            el_bounds_x, el_bounds_y, el_bounds_w, el_bounds_h, _, _ = get_element_bounds(newly_selected_el_config, SCALE/state['zoom'])
-                            element_screen_x = canvas_x + el_bounds_x * state['zoom']
-                            element_screen_y = canvas_y + el_bounds_y * state['zoom']
-                            element_rect_display = pygame.Rect(element_screen_x, element_screen_y, el_bounds_w * state['zoom'], el_bounds_h * state['zoom'])
-                            show_obscure_properties_panel(manager, newly_selected_el_config, element_rect_display)
-                            hide_font_menu()
-                            hide_image_properties_panel()
-                        else: # Rectangle or other types
-                            hide_font_menu()
-                            hide_image_properties_panel()
-                            hide_obscure_properties_panel()
-                
-                # Update double click tracking info for the *next* potential double click
-                if state['selected_idx'] is not None: # Only if something ended up selected
-                    state['last_click_idx_for_double_click'] = state['selected_idx']
-                else:
-                    state['last_click_idx_for_double_click'] = None
-                handled = True
-
-    elif not state['insert_mode'] and not state['text_edit_mode'] and event.button in (2, 3):
+    elif event.button in (2, 3) and not state['insert_mode'] and not state['text_edit_mode']: # Middle or Right mouse button for panning
         state['canvas_drag'] = True
         state['canvas_drag_start'] = (mx, my)
         state['pan_start'] = (state['pan_x'], state['pan_y'])
+        # Explicitly turn off other interaction modes
+        state['dragging'] = False
+        state['resizing'] = False
+        state['font_resizing'] = False
+        state['marquee_selecting'] = False
         handled = True
     
-    if event.button == 1:
-        state['last_click_time'] = pygame.time.get_ticks() / 1000 # General last click time
-        state['last_click_time_for_double_click'] = state['last_click_time'] # Also update for double click logic
-        state['last_click_pos'] = (mx, my)
-        # state['last_click_idx'] is no longer the primary for double click, use state['last_click_idx_for_double_click'] set above.
-        # If you need a general last_click_idx for other purposes, it could be set to state['selected_idx'] here:
-        # if not state['text_edit_mode']:
-        # state['last_click_idx'] = state['selected_idx']
-
     return handled
 
 def handle_mousebuttonup(event, state):
     """Handle mouse button up events"""
-    if event.type == pygame.MOUSEBUTTONUP:
-        # --- Marquee selection end ---
-        if state.get('marquee_selecting'):
-            start = state.get('marquee_start')
-            end = state.get('marquee_end')
-            if start and end:
-                x0, y0 = start
-                x1, y1 = end
-                # If click (no drag), treat as single click (already handled in mousebuttondown)
-                if abs(x0 - x1) < 2 and abs(y0 - y1) < 2:
-                    pass # Do nothing, already handled
-                else:
-                    x_min, x_max = min(x0, x1), max(x0, x1)
-                    y_min, y_max = min(y0, y1), max(y0, y1)
-                    selected = []
-                    for idx, el in enumerate(state['config']['pages'][state['page_num']]['elements']):
-                        x_el, y_el, w_el, h_el, _, _ = get_element_bounds(el, SCALE/state['zoom'])
-                        # Check intersection
-                        if not (x_el + w_el < x_min or x_el > x_max or y_el + h_el < y_min or y_el > y_max):
-                            selected.append(idx)
-                    state['selected_indices'] = selected
-                    state['selected_idx'] = selected[0] if selected else None
-                    print(f"[DEBUG] selected_indices updated (marquee): {state['selected_indices']}")
-                    state['ui_needs_update'] = True
-            state['marquee_selecting'] = False
+    if event.type != pygame.MOUSEBUTTONUP:
+        return False
+        
+    # Handle mouseup for marquee selection in select mode
+    if state['marquee_selecting'] and state['tool_mode'] == 'select':
+        state['marquee_selecting'] = False
+        if state['marquee_start'] and state['marquee_end']:
+            # Calculate marquee selection area
+            x1, y1 = state['marquee_start']
+            x2, y2 = state['marquee_end']
+            marquee_rect = pygame.Rect(min(x1, x2), min(y1, y2), abs(x2 - x1), abs(y2 - y1))
+            
+            # Find elements in the marquee area
+            page_elements = state['config']['pages'][state['page_num']]['elements']
+            selected_indices = []
+            for idx, el in enumerate(page_elements):
+                x_el, y_el, w_el, h_el, _, _ = get_element_bounds(el, SCALE/state['zoom'])
+                el_rect = pygame.Rect(x_el, y_el, w_el, h_el)
+                if marquee_rect.colliderect(el_rect):
+                    selected_indices.append(idx)
+            
+            state['selected_indices'] = selected_indices
+            if selected_indices:
+                state['selected_idx'] = selected_indices[0]
+            else:
+                state['selected_idx'] = None
+            
+            # Reset marquee values
             state['marquee_start'] = None
             state['marquee_end'] = None
-            return True
-        # --- End marquee selection end ---
+        return True
+        
+    # Handle mouseup for smart generate marquee selection
+    elif state['marquee_selecting'] and state['tool_mode'] == 'smart_generate':
+        state['marquee_selecting'] = False
+        if state['marquee_start'] and state['marquee_end']:
+            # Calculate marquee selection area
+            x1, y1 = state['marquee_start']
+            x2, y2 = state['marquee_end']
+            # Store the bounds for smart generate processing
+            state['smart_generate_bounds'] = (min(x1, x2), min(y1, y2), abs(x2 - x1), abs(y2 - y1))
+            
+            # Continue with smart generate processing automatically after selection
+            # This will be processed by the handle_ui_event function
+            state['smart_generate_process'] = True
+            
+            # Reset marquee values but keep smart_generate_active flag
+            state['marquee_start'] = None
+            state['marquee_end'] = None
+        return True
+    
+    # Handle mouseup for dragging
+    if state['dragging']:
         state['dragging'] = False
+        state['offset'] = (0, 0)
+        # Push to history on completion of a dragging operation
+        push_history(state)
+        return True
+    
+    # Handle mouseup for canvas drag
+    if state['canvas_drag']:
         state['canvas_drag'] = False
+        state['canvas_drag_start'] = (0, 0)
+        state['pan_start'] = (0, 0)
+        return True
+    
+    # Handle mouseup for resizing
+    if state['resizing']:
         state['resizing'] = False
         state['resize_mode'] = None
+        # Push to history on completion of a resize operation
+        push_history(state)
+        return True
+    
+    # Handle mouseup for font resizing
+    if state['font_resizing']:
         state['font_resizing'] = False 
         state['font_resizing_mode'] = None 
+        # Push to history on completion of a font resize operation
+        push_history(state)
         return True
+    
     return False
 
 def handle_mousemotion(event, state, window, manager):
@@ -614,13 +709,11 @@ def handle_mousemotion(event, state, window, manager):
     if state.get('marquee_selecting'):
         state['marquee_end'] = (cx, cy)
         handled = True
-    # --- End marquee selection update ---
-
-    if state['resizing'] and state['resize_mode'] is not None:
+    elif state['resizing'] and state['resize_mode'] is not None:
         handle_resize_motion(state, cx, cy)
         handled = True
-    elif state['font_resizing'] and state['font_resizing_mode'] is not None: 
-        handle_font_resize_motion(state, cx, cy) 
+    elif state['font_resizing'] and state['font_resizing_mode'] is not None:
+        handle_font_resize_motion(state, cx, cy)
         handled = True
     elif state['dragging'] and state['selected_idx'] is not None:
         # Use new dragging logic
@@ -872,7 +965,7 @@ def handle_ui_event(event, state, save_config_func, manager):
                         dialog_rect.center = (screen_width // 2, screen_height // 2)
                         state['image_select_dialog'] = ImageFileSelectWindow(
                             rect=dialog_rect,
-                            manager=manager,
+                                                            manager=manager,
                             image_files=image_files_full_paths, # Pass full paths
                             input_img_dir=INPUT_IMG_DIR
                         )
@@ -905,7 +998,44 @@ def handle_ui_event(event, state, save_config_func, manager):
                 state['tool_mode'] = 'select'; state['insert_mode'] = None; pygame.mouse.set_visible(True)
             elif ui_element == state.get('btn_save'):
                 save_config_func(state['pdf_filename'], state['config'])
-                state['running'] = False
+                # Show a toast notification at the bottom of the window
+                window_width, window_height = manager.window_resolution
+                toast_rect = pygame.Rect(window_width // 2 - 120, window_height - 80, 240, 40)
+                pygame_gui.windows.UIMessageWindow(
+                    rect=toast_rect,
+                    html_message='Document saved',
+                    manager=manager,
+                    window_title='',
+                )
+                return True
+            elif ui_element == state.get('btn_smart_generate'):
+                # Switch to smart generate tool mode
+                state['tool_mode'] = 'smart_generate'
+                state['insert_mode'] = None
+                state['smart_generate_active'] = False
+                state['smart_generate_bounds'] = None
+                state['smart_generate_process'] = False
+                pygame.mouse.set_visible(True)
+                print("[DEBUG] Smart Generate mode activated. Draw a marquee to select area for OCR processing.")
+                return True
+            elif ui_element == state.get('btn_generate_fields'):
+                # Check if we need to process a smart generate request
+                if state.get('smart_generate_process'):
+                    # Process the smart generate request using the stored bounds
+                    bounds = state.get('smart_generate_bounds')
+                    if bounds:
+                        smart_generate_fields(state, bounds)
+                        # Reset smart generate state
+                        state['smart_generate_active'] = False
+                        state['smart_generate_bounds'] = None
+                        state['smart_generate_process'] = False
+                        state['tool_mode'] = 'select'  # Switch back to select mode
+                        return True
+                
+                # If not a smart generate request, run normal generate fields
+                run_generate_fields(state)
+                return True
+                
             elif button_id == '#confirm_image_selection' and state.get('image_select_dialog'):
                 selected_path = state['image_select_dialog'].selected_image_path # This is a FULL path
                 element_idx_to_update = state.pop('element_idx_for_image_update', None)
@@ -1257,40 +1387,119 @@ def handle_ui_event(event, state, save_config_func, manager):
             if merge_type == 'image':
                 state['show_image_select_for_element_idx'] = selected_indices[0]
             push_history(state)
-        return True
 
-    return False 
+def smart_generate_fields(state, bounds):
+    """
+    Extracts the selected area from the current page image, runs OCR, and adds detected fields as new text elements.
+    Args:
+        state (dict): The editor state.
+        bounds (tuple): (x, y, width, height) in canvas coordinates.
+    """
+    x, y, w, h = map(int, bounds)
+    # Get the full page image as a numpy array
+    arr = pygame.surfarray.array3d(state['doc_img_full'])
+    arr = np.transpose(arr, (1, 0, 2))  # Pygame is (w,h,3), PIL is (h,w,3)
+    # Crop the selected area
+    crop = arr[y:y+h, x:x+w]
+    if crop.size == 0:
+        print("[smart_generate_fields] Selected area is empty. No OCR performed.")
+        return
+    # Run OCR on the cropped area
+    ocr_results = ocr_utils.ocr_image(crop)
+    # Add new elements for each detected field
+    for res in ocr_results:
+        new_el = {
+            'type': 'text',
+            'x': x + res['left'],
+            'y': y + res['top'],
+            'width': res['width'],
+            'height': res['height'],
+            'font_size': res['font_size'],
+            'value': res['text'],
+            'background_color': [255, 255, 255],
+            'font_color': [0, 0, 0],
+            'text_align_h': 'left',
+            'text_align_v': 'top',
+            'font': 'arial'
+        }
+        state['config']['pages'][state['page_num']]['elements'].append(new_el)
+    state['redraw'] = True
+    push_history(state)
+    print(f"[smart_generate_fields] Added {len(ocr_results)} fields from OCR.")
 
-# --- Undo/History Utilities ---
 def push_history(state):
-    # Only keep up to 50 history states
-    max_history = 50
-    # If we undid and then made a new change, drop all redo states
+    """
+    Save a deep copy of the current config to the history stack for undo/redo.
+    Trims any future history if the user has undone and then makes a new change.
+    """
+    # If we've undone some steps, remove all future history
     if state['history_index'] < len(state['history']) - 1:
-        state['history'] = state['history'][:state['history_index']+1]
-    # Push a deepcopy of config
+        state['history'] = state['history'][:state['history_index'] + 1]
+    # Append a deep copy of the current config
     state['history'].append(copy.deepcopy(state['config']))
-    # Trim if too long
-    if len(state['history']) > max_history:
-        state['history'] = state['history'][-max_history:]
     state['history_index'] = len(state['history']) - 1
+    # Optional: limit history size for memory (e.g., 100 steps)
+    MAX_HISTORY = 100
+    if len(state['history']) > MAX_HISTORY:
+        state['history'] = state['history'][-MAX_HISTORY:]
+        state['history_index'] = len(state['history']) - 1
+    print(f"[push_history] History length: {len(state['history'])}, current index: {state['history_index']}")
 
 def undo_history(state):
+    """
+    Undo the last change by reverting to the previous config in the history stack.
+    Updates state['config'] and state['history_index'] if possible.
+    Also clears selection and marks UI for update.
+    """
     if state['history_index'] > 0:
         state['history_index'] -= 1
         state['config'] = copy.deepcopy(state['history'][state['history_index']])
         state['selected_idx'] = None
-        state['selected_indices'] = [] # Clear multi-select on undo
+        state['selected_indices'] = []
         state['editing_idx'] = None
-        state['text_edit_mode'] = False
-        hide_font_menu()
-        hide_image_properties_panel()
-        hide_obscure_properties_panel()
-        state['redraw'] = True 
+        state['ui_needs_update'] = True
+        print(f"[undo_history] Undid to history index: {state['history_index']}")
+    else:
+        print("[undo_history] Already at oldest history state. Nothing to undo.")
 
-def get_z_order_key(element_tuple):
-    el_data, original_idx = element_tuple
-    el_type = el_data.get('type')
-    type_order = {'text': 0, 'image': 1, 'obscure': 2, 'rectangle': 3} # Lower is "on top"
-    type_z = type_order.get(el_type, 99) # Default for others
-    return (type_z, -original_idx) # Higher original_idx (later in list) is on top for same type 
+def handle_arrow_key_repeat(state):
+    """
+    Called every frame from the main loop to handle repeated movement when an arrow key is held.
+    """
+    if not state.get('arrow_key_held'):
+        return
+    key = state['arrow_key_held']
+    now = time.time()
+    last_time = state.get('arrow_key_last_time', 0)
+    initial_delay = 0.3  # seconds before repeat starts
+    repeat_interval = 0.05  # seconds between repeats
+    if 'arrow_key_first_press' not in state:
+        state['arrow_key_first_press'] = now
+    if now - state['arrow_key_first_press'] < initial_delay:
+        return
+    if now - last_time < repeat_interval:
+        return
+    # Move selected node(s)
+    step = 10 if (pygame.key.get_mods() & pygame.KMOD_SHIFT) else 1
+    dx, dy = 0, 0
+    if key == pygame.K_LEFT:
+        dx = -step
+    elif key == pygame.K_RIGHT:
+        dx = step
+    elif key == pygame.K_UP:
+        dy = -step
+    elif key == pygame.K_DOWN:
+        dy = step
+    if dx != 0 or dy != 0:
+        page_elements = state['config']['pages'][state['page_num']]['elements']
+        moved = False
+        for idx in state['selected_indices']:
+            if 0 <= idx < len(page_elements):
+                page_elements[idx]['x'] = page_elements[idx].get('x', 0) + dx
+                page_elements[idx]['y'] = page_elements[idx].get('y', 0) + dy
+                moved = True
+        if moved:
+            push_history(state)
+            state['ui_needs_update'] = True
+            state['redraw'] = True
+    state['arrow_key_last_time'] = now

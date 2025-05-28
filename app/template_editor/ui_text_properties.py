@@ -4,6 +4,8 @@ import pygame
 import pygame_gui
 from pygame_gui.elements import UIPanel, UILabel, UITextBox, UITextEntryLine, UIButton, UIDropDownMenu
 from app.template_editor.constants import TEMPLATE_VARIABLE_KEYS, CUSTOM_TEXT_KEY_DISPLAY, DEFAULT_TEXT_PLACEHOLDER_VALUE
+import json
+import os
 
 # Choices for font, size, and color
 FONT_CHOICES = ['arial', 'timesnewroman', 'couriernew']
@@ -24,8 +26,35 @@ template_key_dropdown = None
 
 ICON_TRASH_PATH = 'app/assets/icon_trash.png'
 
+# Add global flag for custom key input focus
+is_editing_custom_key_input = False
+custom_key_input = None  # Make this global so we can check focus
+
+# Add a global for the example value label
+example_value_label = None
+
+# Load and flatten template keys with example values
+TEMPLATE_KEYS_PATH = os.path.join('configs', 'template_keys.json')
+def flatten_keys(d, prefix=''):
+    items = []
+    if isinstance(d, dict):
+        for k, v in d.items():
+            new_prefix = f"{prefix}.{k}" if prefix else k
+            if isinstance(v, dict):
+                items.extend(flatten_keys(v, new_prefix))
+            else:
+                items.append((new_prefix, v))
+    return items
+try:
+    with open(TEMPLATE_KEYS_PATH, 'r', encoding='utf-8') as f:
+        template_keys_data = json.load(f)
+    FLATTENED_TEMPLATE_KEYS = flatten_keys(template_keys_data)
+except Exception as e:
+    print(f"[ui_text_properties] Failed to load template_keys.json: {e}")
+    FLATTENED_TEMPLATE_KEYS = []
+
 def show_font_menu(el, element_rect=None, manager=None):
-    global font_menu_panel, font_dropdown, size_dropdown, color_dropdown, xy_label, note_box, padding_inputs, text_node_remove_btn, template_key_dropdown, size_input
+    global font_menu_panel, font_dropdown, size_dropdown, color_dropdown, xy_label, note_box, padding_inputs, text_node_remove_btn, template_key_dropdown, size_input, custom_key_input, example_value_label
     if font_menu_panel:
         font_menu_panel.kill()
         font_menu_panel = None
@@ -41,19 +70,57 @@ def show_font_menu(el, element_rect=None, manager=None):
     UILabel(relative_rect=pygame.Rect(10, current_y, 200, 24), text='Text Node Properties', manager=manager, container=font_menu_panel)
     current_y += 30
 
-    # Template Key Dropdown
+    # --- New custom key input row ---
+    UILabel(relative_rect=pygame.Rect(10, current_y, 80, 24), text='New Key:', manager=manager, container=font_menu_panel)
+    custom_key_input = UITextEntryLine(pygame.Rect(90, current_y, panel_w - 150, 30), manager, font_menu_panel)
+    custom_key_input.set_text(el.get('value', ''))
+    plus_btn = UIButton(pygame.Rect(panel_w - 50, current_y, 40, 30), '+', manager, font_menu_panel, object_id='#add_custom_key')
+    current_y += 40
+
+    # --- Data Key Dropdown row ---
     UILabel(relative_rect=pygame.Rect(10, current_y, 80, 24), text='Data Key:', manager=manager, container=font_menu_panel)
     current_value = el.get('value', '')
-    initial_key_selection = current_value if current_value in TEMPLATE_VARIABLE_KEYS else CUSTOM_TEXT_KEY_DISPLAY
+    # Build dropdown options: 'key (example)'
+    dropdown_options = [f"{k} ({v})" for k, v in FLATTENED_TEMPLATE_KEYS]
+    key_to_option = {k: f"{k} ({v})" for k, v in FLATTENED_TEMPLATE_KEYS}
+    option_to_key = {f"{k} ({v})": k for k, v in FLATTENED_TEMPLATE_KEYS}
+    # Add custom key display if current value is not in template keys
+    if current_value and current_value not in key_to_option:
+        dropdown_options.append(current_value)
+        initial_key_selection = current_value
+    elif current_value in key_to_option:
+        initial_key_selection = key_to_option[current_value]
+    else:
+        initial_key_selection = dropdown_options[0] if dropdown_options else ''
     template_key_dropdown = UIDropDownMenu(
-        options_list=TEMPLATE_VARIABLE_KEYS,
+        options_list=dropdown_options,
         starting_option=initial_key_selection,
         relative_rect=pygame.Rect(90, current_y, panel_w - 100, 30),
         manager=manager,
         container=font_menu_panel,
         object_id='#template_key_dropdown'
     )
-    current_y += 40
+    # Store mapping for use in event handler
+    template_key_dropdown._option_to_key = option_to_key
+    example_value_label = UILabel(
+        relative_rect=pygame.Rect(90, current_y, panel_w - 100, 24),
+        text='',
+        manager=manager,
+        container=font_menu_panel
+    )
+    # Set initial example value
+    selected_option = template_key_dropdown.selected_option
+    example_value = ''
+    if hasattr(template_key_dropdown, '_option_to_key'):
+        key = template_key_dropdown._option_to_key.get(selected_option, selected_option)
+        for k, v in FLATTENED_TEMPLATE_KEYS:
+            if k == key:
+                example_value = str(v)
+                break
+        else:
+            example_value = 'No example value'
+    example_value_label.set_text(f"Example: {example_value}")
+    current_y += 28
 
     font_dropdown = pygame_gui.elements.UIDropDownMenu(FONT_CHOICES, el.get('font', 'arial'), pygame.Rect(10, current_y, 140, 30), manager, container=font_menu_panel)
     size_input_local = UITextEntryLine(pygame.Rect(160, current_y, 60, 30), manager, font_menu_panel)
@@ -101,6 +168,15 @@ def show_font_menu(el, element_rect=None, manager=None):
             manager=manager,
             container=font_menu_panel)
 
+    # Add focus/blur event handlers for the custom key input
+    def on_focus():
+        global is_editing_custom_key_input
+        is_editing_custom_key_input = True
+    def on_blur():
+        global is_editing_custom_key_input
+        is_editing_custom_key_input = False
+
+
 def hide_font_menu():
     global font_menu_panel
     if font_menu_panel:
@@ -108,7 +184,7 @@ def hide_font_menu():
         font_menu_panel = None
 
 def handle_font_menu_event(event, editing_idx, config, page_num):
-    global font_dropdown, size_dropdown, color_dropdown, template_key_dropdown, size_input
+    global font_dropdown, size_dropdown, color_dropdown, template_key_dropdown, size_input, example_value_label
     if font_menu_panel is None:
         return False
     if event.type == pygame_gui.UI_DROP_DOWN_MENU_CHANGED:
@@ -123,8 +199,20 @@ def handle_font_menu_event(event, editing_idx, config, page_num):
                 return True
         elif event.ui_element == template_key_dropdown:
             if editing_idx is not None:
-                selected_key_text = event.text  # Text from the dropdown, e.g., "broker.email" or "<Custom Text>"
-                config['pages'][page_num]['elements'][editing_idx]['value'] = selected_key_text
+                # Store only the key, not the example value
+                selected_option = event.text
+                key = template_key_dropdown._option_to_key.get(selected_option, selected_option)
+                config['pages'][page_num]['elements'][editing_idx]['value'] = key
+                # Update example value label
+                example_value = ''
+                for k, v in FLATTENED_TEMPLATE_KEYS:
+                    if k == key:
+                        example_value = str(v)
+                        break
+                else:
+                    example_value = 'No example value'
+                if example_value_label:
+                    example_value_label.set_text(f"Example: {example_value}")
                 return True
     # Handle font size input change
     if event.type == pygame_gui.UI_TEXT_ENTRY_FINISHED:
@@ -137,4 +225,25 @@ def handle_font_menu_event(event, editing_idx, config, page_num):
                     return True
                 except ValueError:
                     pass  # Ignore invalid input
+    if event.type == pygame_gui.UI_BUTTON_PRESSED:
+        if hasattr(event.ui_element, 'object_id') and event.ui_element.object_id == '#add_custom_key':
+            # Get the text from the custom key input
+            for element in font_menu_panel.get_container().get_descendants():
+                if isinstance(element, UITextEntryLine):
+                    new_key = element.get_text().strip()
+                    break
+            else:
+                new_key = ''
+            if new_key and new_key not in TEMPLATE_VARIABLE_KEYS:
+                # Add to config and update config file
+                TEMPLATE_VARIABLE_KEYS.append(new_key)
+                # Save to config file (assume config is the loaded config dict)
+                config_path = os.path.join('configs', f"{config['pdf_filename'].split('.')[0]}.json")
+                with open(config_path, 'w') as f:
+                    json.dump(config, f, indent=4)
+                # Reload keys (simulate by reloading the panel)
+                # You may want to call show_font_menu again or refresh the dropdown
+                # For now, just print for debug
+                print(f"Added new key: {new_key} and updated config file.")
+                return True
     return False

@@ -3,18 +3,34 @@ import pymupdf
 from PIL import Image
 import json
 import pygame
-from app.template_editor.constants import SCALE, TEMP_IMG_DIR, CONFIG_DIR, INPUT_DIR, THUMB_SIZE, PREVIEW_SIZE
+from app.template_editor.constants import SCALE, TEMP_IMG_DIR, CONFIG_DIR, INPUT_DIR, THUMB_SIZE, PREVIEW_SIZE, TARGET_HEIGHT
 
 def pdf_page_to_image(pdf_path, page_num, out_path):
-    """Convert a PDF page to an image file"""
+    """Convert a PDF page to an image file at a standardized height"""
     doc = pymupdf.open(pdf_path)
     page = doc.load_page(page_num)
-    # Render at 2x resolution
-    zoom = SCALE
-    mat = pymupdf.Matrix(zoom, zoom)
+    
+    # Get original page dimensions
+    page_rect = page.rect
+    page_width = page_rect.width
+    page_height = page_rect.height
+    
+    # Calculate zoom factor to achieve target height
+    zoom_factor = TARGET_HEIGHT / page_height
+    
+    # Create transformation matrix with the calculated zoom
+    mat = pymupdf.Matrix(zoom_factor, zoom_factor)
+    
+    # Render the page with the calculated zoom
     pix = page.get_pixmap(matrix=mat)
+    
+    # Convert to PIL Image and save
     img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
     img.save(out_path)
+    
+    # Print dimensions for debugging
+    print(f"Rendered page {page_num+1} at size: {pix.width}x{pix.height} pixels (zoom: {zoom_factor:.2f})")
+    
     doc.close()
     return out_path
 
