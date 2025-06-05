@@ -523,7 +523,7 @@ def handle_mousebuttondown(event, state, window, manager: pygame_gui.UIManager):
             # ... (existing rectangle insert logic from lines 394-410)
             new_el = {
                 'type': 'rectangle', 'x': cx, 'y': cy, 'width': 100, 'height': 50,
-                'background_color': [200, 200, 200]
+                'background_color': [255, 255, 255]
             }
             current_page_elements.append(new_el)
             new_idx = len(current_page_elements) - 1
@@ -1238,7 +1238,7 @@ def handle_ui_event(event, state, save_config_func, manager):
                             'y': min_y,
                             'width': max_x - min_x,
                             'height': max_y - min_y,
-                            'background_color': [200, 200, 200]
+                            'background_color': [255, 255, 255]
                         }
                     else:
                         new_el = {
@@ -1369,7 +1369,7 @@ def handle_ui_event(event, state, save_config_func, manager):
                     'y': min_y,
                     'width': max_x - min_x,
                     'height': max_y - min_y,
-                    'background_color': [200, 200, 200]
+                    'background_color': [255, 255, 255]
                 }
             else:
                 new_el = {

@@ -18,7 +18,7 @@ def draw_element(surface, element, selected=False, editing=False, current_text=N
     scaled_box_y = int(element.get('y', 0) * scale)
     scaled_box_width = int(element.get('width', 100) * scale)
     scaled_box_height = int(element.get('height', 30) * scale)
-    background_color = tuple(element.get('background_color', (220,220,220))) # Default light gray for any element
+    background_color = tuple(element.get('background_color', (255,255,255))) # Default white for any element
 
     # --- Draw Selection Highlight (around the bounding box) ---
     if selected:

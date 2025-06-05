@@ -4,8 +4,11 @@ import pygame_gui
 import copy
 
 # Import modules from our refactored structure
-from app.template_editor.constants import *
-from app.template_editor.constants import TARGET_HEIGHT  # Explicit import for linter
+from app.template_editor.constants import (
+    TARGET_HEIGHT, TEMP_IMG_DIR, BG_TEXTURE_PATH, CURSOR_TEXT_PATH,
+    CURSOR_IMAGE_PATH, INPUT_DIR, CONFIG_DIR, DEFAULT_ZOOM_INDEX,
+    ZOOM_LEVELS, DOUBLE_CLICK_THRESHOLD, INPUT_IMG_DIR
+)
 from app.template_editor.pdf_utils import (
     pdf_page_to_image, load_config, save_config, 
     get_pdf_thumbnails
@@ -415,7 +418,8 @@ def main():
         if state.get('reselect_file'):
             print("[app.py] Reselecting file...")
             # Save current work maybe? For now, just reselect.
-            if state.get('text_edit_mode'): reset_text_edit_mode(state)
+            if state.get('text_edit_mode'):
+                reset_text_edit_mode(state)
             hide_font_menu() # Ensure font menu is hidden
 
             pdf_filename_new = select_pdf_file(window, manager, clock)
@@ -561,7 +565,7 @@ def main():
         current_page_config = state['config']['pages'][state['page_num']]
         if 'elements' in current_page_config:
             all_elements_with_indices = list(enumerate(current_page_config.get('elements', [])))
-            element_types_draw_order = ['rectangle', 'image', 'text']
+            element_types_draw_order = ['rectangle', 'obscure', 'image', 'text']
             # Calculate visible area in canvas coordinates
             win_w, win_h = window.get_width(), window.get_height()
             canvas_x, canvas_y = get_canvas_position(win_w, win_h, scaled_w, scaled_h, state['pan_x'], state['pan_y'])
@@ -665,4 +669,3 @@ def main():
                     item['selected'] = False
                     if item['button_element'] is not None:
                         item['button_element'].unselect()
-False
